@@ -1,0 +1,127 @@
+/**
+ * @fileoverview Firestore Security Rules for College Compass App
+ *
+ * Core Philosophy: This ruleset enforces a strict user-ownership model for user profiles, chat messages, and recommendations. Resources are publicly accessible.
+ *
+ * Data Structure:
+ * - /users/{userId}: Stores user profile data, accessible only by the user.
+ * - /users/{userId}/chatMessages/{messageId}: Stores chat messages for each user, accessible only by the user.
+ * - /resources/{resourceId}: Stores learning resources, publicly accessible.
+ * - /users/{userId}/recommendations/{recommendationId}: Stores personalized recommendations, accessible only by the user.
+ *
+ * Key Security Decisions:
+ * - Users can only access their own profiles, chat messages, and recommendations.
+ * - Resources are publicly readable.
+ * - User listing is not allowed.
+ *
+ * Denormalization for Authorization:
+ * - Chat messages and recommendations are stored directly under the user's profile to avoid needing to query parent documents for authorization.
+ */
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    /**
+     * @description Enforces access control for user profiles. Only the authenticated user can read and write their own profile.
+     * @path /users/{userId}
+     * @allow (create, update, get) if request.auth.uid == userId
+     * @deny (delete) Always deny profile deletion.
+     * @deny (create, update, get) if request.auth.uid != userId
+     * @principle Enforces document ownership for all operations.
+     */
+    match /users/{userId} {
+      function isOwner(userId) {
+        return request.auth.uid == userId;
+      }
+
+      function isExistingOwner(userId) {
+        return isOwner(userId) && resource != null;
+      }
+
+      allow get: if isOwner(userId);
+      allow list: if false;
+      allow create: if isOwner(userId);
+      allow update: if isExistingOwner(userId);
+      allow delete: if false; // Prevent user deletion of profile.
+
+    }
+
+    /**
+     * @description Enforces access control for chat messages. Only the authenticated user can read and write their own chat messages.
+     * @path /users/{userId}/chatMessages/{messageId}
+     * @allow (create, update, get) if request.auth.uid == userId
+     * @deny (delete) Always deny chat messages deletion, consider marking them as deleted instead
+     * @deny (create, update, get) if request.auth.uid != userId
+     * @principle Enforces document ownership for all operations.
+     */
+    match /users/{userId}/chatMessages/{messageId} {
+        function isOwner(userId) {
+            return request.auth.uid == userId;
+        }
+
+        function isExistingOwner(userId) {
+            return isOwner(userId) && resource != null;
+        }
+
+        allow get: if isOwner(userId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && request.resource.data.userProfileId == userId;
+        allow update: if isExistingOwner(userId) && request.resource.data.userProfileId == userId;
+        allow delete: if false; // Consider marking the message as deleted instead of deleting.
+    }
+
+    /**
+     * @description Allows public read access to learning resources.
+     * @path /resources/{resourceId}
+     * @allow (get, list) Public read access to all resources.
+     * @deny (create, update, delete) No write access allowed for any user.
+     * @principle Grants public read access while restricting write access to prevent unauthorized modifications.
+     */
+    match /resources/{resourceId} {
+      allow get: if true;
+      allow list: if true;
+      allow create: if false;
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    /**
+     * @description Enforces access control for personalized recommendations. Only the authenticated user can read and write their own recommendations.
+     * @path /users/{userId}/recommendations/{recommendationId}
+     * @allow (create, update, get) if request.auth.uid == userId
+     * @deny (delete) Always deny recommendation deletion.
+     * @deny (create, update, get) if request.auth.uid != userId
+     * @principle Enforces document ownership for all operations.
+     */
+    match /users/{userId}/recommendations/{recommendationId} {
+      function isOwner(userId) {
+          return request.auth.uid == userId;
+      }
+
+      function isExistingOwner(userId) {
+        return isOwner(userId) && resource != null;
+      }
+
+      allow get: if isOwner(userId);
+      allow list: if isOwner(userId);
+      allow create: if isOwner(userId) && request.resource.data.userProfileId == userId;
+      allow update: if isExistingOwner(userId) && request.resource.data.userProfileId == userId;
+      allow delete: if false;
+    }
+
+    /**
+     * @description Allows public read access to glossary terms.
+     * @path /glossary/{glossaryId}
+     * @allow (get, list) Public read access to all glossary terms.
+     * @deny (create, update, delete) No write access allowed for any user.
+     * @principle Grants public read access while restricting write access to prevent unauthorized modifications.
+     */
+    match /glossary/{glossaryId} {
+      allow get: if true;
+      allow list: if true;
+      allow create: if false;
+      allow update: if false;
+      allow delete: if false;
+    }
+  }
+}
