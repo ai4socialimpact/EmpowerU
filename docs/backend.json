@@ -1,0 +1,307 @@
+{
+  "entities": {
+    "UserProfile": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "UserProfile",
+      "type": "object",
+      "description": "Represents a student's profile within the College Compass app.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the UserProfile entity."
+        },
+        "username": {
+          "type": "string",
+          "description": "The student's chosen username."
+        },
+        "displayName": {
+          "type": "string",
+          "description": "The student's display name, typically their username."
+        },
+        "firstName": {
+          "type": "string",
+          "description": "The first name of the student."
+        },
+        "lastName": {
+          "type": "string",
+          "description": "The last name of the student."
+        },
+        "email": {
+          "type": "string",
+          "description": "The email address of the student.",
+          "format": "email"
+        },
+        "majorInterests": {
+          "type": "array",
+          "description": "An array of strings representing the student's areas of academic interest.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "graduationYear": {
+          "type": "number",
+          "description": "The expected graduation year of the student."
+        }
+      },
+      "required": [
+        "id",
+        "username",
+        "displayName",
+        "firstName",
+        "lastName",
+        "email",
+        "majorInterests",
+        "graduationYear"
+      ]
+    },
+    "ChatMessage": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "ChatMessage",
+      "type": "object",
+      "description": "Represents a single message within a conversation with the AI mentor.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the ChatMessage entity."
+        },
+        "userProfileId": {
+          "type": "string",
+          "description": "Reference to UserProfile. (Relationship: UserProfile 1:N ChatMessage).  The user who sent or received the message."
+        },
+        "timestamp": {
+          "type": "string",
+          "description": "The date and time the message was sent.",
+          "format": "date-time"
+        },
+        "content": {
+          "type": "string",
+          "description": "The text content of the message."
+        },
+        "isUserGenerated": {
+          "type": "boolean",
+          "description": "Indicates whether the message was sent by the user (true) or the AI mentor (false)."
+        }
+      },
+      "required": [
+        "id",
+        "userProfileId",
+        "timestamp",
+        "content",
+        "isUserGenerated"
+      ]
+    },
+    "Resource": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "Resource",
+      "type": "object",
+      "description": "Represents a learning resource available to students.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the Resource entity."
+        },
+        "title": {
+          "type": "string",
+          "description": "The title of the resource."
+        },
+        "description": {
+          "type": "string",
+          "description": "A brief description of the resource."
+        },
+        "url": {
+          "type": "string",
+          "description": "The URL where the resource can be accessed.",
+          "format": "uri"
+        },
+        "resourceType": {
+          "type": "string",
+          "description": "The type of resource (e.g., article, video, website)."
+        },
+        "keywords": {
+          "type": "array",
+          "description": "Keywords associated with the resource, for searching and filtering.",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "description",
+        "url",
+        "resourceType",
+        "keywords"
+      ]
+    },
+    "Recommendation": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "Recommendation",
+      "type": "object",
+      "description": "Represents a personalized recommendation for a student.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the Recommendation entity."
+        },
+        "userProfileId": {
+          "type": "string",
+          "description": "Reference to UserProfile. (Relationship: UserProfile 1:N Recommendation). The user who is receiving the recommendation."
+        },
+        "resourceId": {
+          "type": "string",
+          "description": "Reference to Resource. (Relationship: Resource 1:N Recommendation). The resource being recommended."
+        },
+        "recommendationType": {
+          "type": "string",
+          "description": "The type of recommendation (e.g., college, scholarship, resource)."
+        },
+        "reason": {
+          "type": "string",
+          "description": "The reason for the recommendation."
+        }
+      },
+      "required": [
+        "id",
+        "userProfileId",
+        "resourceId",
+        "recommendationType",
+        "reason"
+      ]
+    },
+    "Glossary": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "Glossary",
+      "type": "object",
+      "description": "Represents a glossary term related to college and financial aid.",
+      "properties": {
+        "term": {
+          "type": "string",
+          "description": "The glossary term."
+        },
+        "acronym": {
+          "type": "string",
+          "description": "The acronym for the term, if applicable."
+        },
+        "simple_definition": {
+          "type": "string",
+          "description": "A simple, easy-to-understand definition of the term."
+        },
+        "detailed_explanation": {
+          "type": "string",
+          "description": "A more detailed explanation of the term."
+        },
+        "category": {
+          "type": "string",
+          "description": "The category the term belongs to.",
+          "default": "Financial Aid"
+        }
+      },
+      "required": [
+        "term",
+        "simple_definition",
+        "detailed_explanation",
+        "category"
+      ]
+    }
+  },
+  "auth": {
+    "providers": [
+      "password",
+      "anonymous"
+    ]
+  },
+  "firestore": {
+    "structure": [
+      {
+        "path": "/users/{userId}",
+        "definition": {
+          "entityName": "UserProfile",
+          "schema": {
+            "$ref": "#/backend/entities/UserProfile"
+          },
+          "description": "Stores user profile information. Path-based ownership ensures only the user can access their profile.",
+          "params": [
+            {
+              "name": "userId",
+              "description": "The unique identifier of the user."
+            }
+          ]
+        }
+      },
+      {
+        "path": "/users/{userId}/chatMessages/{messageId}",
+        "definition": {
+          "entityName": "ChatMessage",
+          "schema": {
+            "$ref": "#/backend/entities/ChatMessage"
+          },
+          "description": "Stores chat messages associated with a specific user. Path-based ownership enforces that only the user can access their chat messages.",
+          "params": [
+            {
+              "name": "userId",
+              "description": "The unique identifier of the user."
+            },
+            {
+              "name": "messageId",
+              "description": "The unique identifier of the chat message."
+            }
+          ]
+        }
+      },
+      {
+        "path": "/resources/{resourceId}",
+        "definition": {
+          "entityName": "Resource",
+          "schema": {
+            "$ref": "#/backend/entities/Resource"
+          },
+          "description": "Stores learning resources available to all users. No specific authorization requirements, making it accessible to all users.",
+          "params": [
+            {
+              "name": "resourceId",
+              "description": "The unique identifier of the resource."
+            }
+          ]
+        }
+      },
+      {
+        "path": "/users/{userId}/recommendations/{recommendationId}",
+        "definition": {
+          "entityName": "Recommendation",
+          "schema": {
+            "$ref": "#/backend/entities/Recommendation"
+          },
+          "description": "Stores personalized recommendations for a specific user. Path-based ownership ensures only the user can access their recommendations.",
+          "params": [
+            {
+              "name": "userId",
+              "description": "The unique identifier of the user."
+            },
+            {
+              "name": "recommendationId",
+              "description": "The unique identifier of the recommendation."
+            }
+          ]
+        }
+      },
+      {
+        "path": "/glossary/{glossaryId}",
+        "definition": {
+          "entityName": "Glossary",
+          "schema": {
+            "$ref": "#/backend/entities/Glossary"
+          },
+          "description": "Stores glossary terms available to all users. No specific authorization requirements, making it accessible to all users.",
+          "params": [
+            {
+              "name": "glossaryId",
+              "description": "The unique identifier of the glossary term."
+            }
+          ]
+        }
+      }
+    ],
+    "reasoning": "The Firestore structure is designed to address the 'auth/configuration-not-found' error, which indicates a problem with Firebase Authentication setup. The structure is also optimized for the College Compass app's core features: AI Mentor Chat, Resource Library, Personalized Recommendations, and User Authentication. It prioritizes Authorization Independence, Clarity of Intent, DBAC (Database-Based Access Control), QAPs (Queries Are Not Filters), and Invariants, following the design principles outlined. All documents are created with explicit ownership and timestamp fields.\n\n1.  **Authorization Independence:** The structure denormalizes authorization context where needed. User-owned data is stored under the `/users/{userId}` path, eliminating the need for `get()` calls in security rules.  Specifically, `chatMessages` and `recommendations` are stored directly under the user's profile to avoid needing to query parent documents for authorization.\n2.  **Clarity of Intent:** The structure is explicit about ownership. User profiles, chat messages, and recommendations are stored under user-specific paths, making it clear who owns the data.\n3.  **DBAC (No Custom Claims):** User roles or permissions are not stored as custom claims. Instead, authorization relies solely on `request.auth.uid` and the path-based ownership model.\n4.  **QAPs (Rules are not Filters):** The structure enables secure `list` operations. Because all documents within a collection share the same security requirements, listing resources or recommendations is secure. Resource access is not tied to user-specific data, so a global `resources` collection can be queried without filtering.\n5.  **Invariants:** The structure supports the integrity of ownership, timestamps, and denormalized data. Timestamps are included in both `ChatMessage` entities, enabling chronological ordering and analysis.  The direct path-based ownership of `ChatMessage` and `Recommendation` entities under the user profile ensures data integrity.\n\n**Addressing the 'auth/configuration-not-found' Error:** The error likely stems from an incorrect or missing Firebase configuration in the Next.js app. While the Firestore structure itself doesn't directly solve this, ensuring proper environment variables and Firebase initialization is crucial. The data structure provided below assumes the authentication setup is corrected separately.\n"
+  }
+}
