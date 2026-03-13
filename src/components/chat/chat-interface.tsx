@@ -12,13 +12,14 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
-import {MessageData} from 'genkit';
+import {MentorChatInput} from '@/ai/flows/mentor-chat';
 import {Avatar, AvatarFallback, AvatarImage} from '@/components/ui/avatar';
 import { Textarea } from '@/components/ui/textarea';
 import {Button} from '@/components/ui/button';
 import {useToast} from '@/hooks/use-toast';
 import Link from 'next/link';
 import { FileText } from 'lucide-react';
+import {doc, getDoc, serverTimestamp, setDoc} from 'firebase/firestore';
 
 type DisplayMessage = {
   role: 'user' | 'model';
@@ -31,7 +32,7 @@ type DisplayMessage = {
 };
 
 export function ChatInterface() {
-  const {user, isUserLoading} = useFirebase();
+  const {user, isUserLoading, firestore} = useFirebase();
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(true);
@@ -39,17 +40,38 @@ export function ChatInterface() {
   const {toast} = useToast();
 
   useEffect(() => {
-    async function getInitialResponse() {
+    async function loadConversation() {
       if (!user) return;
+      const chatDocRef = doc(firestore, 'users', user.uid, 'mentorChats', 'default');
+
       try {
+        const existingConversation = await getDoc(chatDocRef);
+        if (existingConversation.exists()) {
+          const savedMessages = existingConversation.data().messages;
+          if (Array.isArray(savedMessages) && savedMessages.length > 0) {
+            setMessages(savedMessages as DisplayMessage[]);
+            return;
+          }
+        }
+
         const firstName = user.displayName?.split(' ')?.[0] || 'friend';
         const response = await mentorFirstResponse({userName: firstName});
-        setMessages([
+        const initialMessages: DisplayMessage[] = [
           {
             role: 'model',
             text: response,
           },
-        ]);
+        ];
+        setMessages(initialMessages);
+        await setDoc(
+          chatDocRef,
+          {
+            messages: initialMessages,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          },
+          {merge: true}
+        );
       } catch (error) {
         console.error('Failed to get initial AI response:', error);
         toast({
@@ -62,9 +84,9 @@ export function ChatInterface() {
     }
 
     if (user) {
-      getInitialResponse();
+      loadConversation();
     }
-  }, [user, toast]);
+  }, [user, firestore, toast]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({behavior: 'smooth'});
@@ -73,18 +95,20 @@ export function ChatInterface() {
   const handleSendMessage = async (messageText?: string) => {
     const textToSend = messageText || input;
     if (!textToSend.trim() || !user) return;
+    const chatDocRef = doc(firestore, 'users', user.uid, 'mentorChats', 'default');
 
     const userMessage: DisplayMessage = {
       role: 'user',
       text: textToSend,
     };
 
-    setMessages(prevMessages => [...prevMessages, userMessage]);
+    const messagesWithUser = [...messages, userMessage];
+    setMessages(messagesWithUser);
     setInput('');
     setIsLoading(true);
 
     try {
-      const history: MessageData[] = messages.map(msg => ({
+      const history: MentorChatInput['history'] = messages.map(msg => ({
         role: msg.role,
         content: [{text: msg.text}],
       }));
@@ -94,15 +118,22 @@ export function ChatInterface() {
         message: textToSend,
       });
 
-      setMessages(prevMessages => [
-        ...prevMessages,
+      const modelMessage: DisplayMessage = {
+        role: 'model',
+        text: response.answer,
+        followUpQuestions: response.followUpQuestions,
+        relatedResources: response.relatedResources,
+      };
+      const updatedMessages = [...messagesWithUser, modelMessage];
+      setMessages(updatedMessages);
+      await setDoc(
+        chatDocRef,
         {
-          role: 'model',
-          text: response.answer,
-          followUpQuestions: response.followUpQuestions,
-          relatedResources: response.relatedResources,
+          messages: updatedMessages,
+          updatedAt: serverTimestamp(),
         },
-      ]);
+        {merge: true}
+      );
     } catch (error) {
       console.error('Failed to get AI response:', error);
       toast({
