@@ -93,10 +93,19 @@ const prompt = `
   - You must NOT mention the findResources tool by name in your answer.
   
   # Formatting Rules
-  - When creating lists, use a dash (-) for each item. Do not use any other markdown for list formatting.
+  - When creating lists inside the "answer" field, use a dash (-) for each item. Do not use any other markdown for list formatting.
   - You must output a JSON object with three keys: 'answer' (your primary response), 'followUpQuestions' (an array of 1-3 suggested follow-up questions), and 'relatedResources' (a list of 1-2 relevant resources found using the findResources tool).
   - When you use the findResources tool, you MUST populate the 'relatedResources' field in the output with the results. Do not include the URLs in the 'answer' field.
-`;
+
+  # Critical Output Requirements
+  - You must return ONLY valid JSON
+  - Do NOT include any text before or after the JSON.
+  - Do NOT use markdown formatting.
+  - Do NOT explain your answer outside the JSON.
+  - The response MUST start with { and end with }.
+  - All content must be properly formatted JSON.
+`
+;
 
 const mentorChatFlow = ai.defineFlow(
   {
@@ -105,24 +114,40 @@ const mentorChatFlow = ai.defineFlow(
     outputSchema: MentorChatOutputSchema,
   },
   async ({history, message}) => {
-    const {output} = await ai.generate({
-      tools: [findResources],
-      messages: [
-        {role: 'system', content: [{text: prompt}]},
-        ...history,
-        {role: 'user', content: [{text: message}]},
-      ],
-      config: {
-        temperature: 0.7,
-      },
-    });
+    let response;
+    try {
+      response = await ai.generate({
+        tools: [findResources],
+        messages: [
+          {role: 'system', content: [{text: prompt}]},
+          ...history,
+          {role: 'user', content: [{text: message}]},
+        ],
+        output: { schema: MentorChatOutputSchema },
+        config: {
+          temperature: 0.7,
+        },
+      });
+    } catch (error) {
+      console.error('mentorChat generate error:', error);
+      return {
+        answer:
+          "I'm sorry, I'm having trouble connecting right now. Please try again in a moment.",
+        followUpQuestions: [],
+        relatedResources: [],
+      };
+    }
 
+    const output = response.output;
     if (!output) {
       return {
         answer:
           "I'm sorry, I'm having trouble connecting right now. Please try again in a moment.",
+        followUpQuestions: [],
+        relatedResources: [],
       };
     }
+
     return output;
   }
 );
