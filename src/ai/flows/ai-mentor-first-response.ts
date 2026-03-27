@@ -3,6 +3,12 @@
 import {ai} from '@/ai/genkit';
 import {z} from 'zod';
 
+declare global {
+  // Reuse flow registration across hot reloads when ai is singleton.
+  // eslint-disable-next-line no-var
+  var __empoweru_first_response_flow: unknown;
+}
+
 const MentorFirstResponseInputSchema = z.object({
   userName: z.string(),
 });
@@ -17,15 +23,17 @@ export async function mentorFirstResponse(
   return mentorFirstResponseFlow(input);
 }
 
-export const mentorFirstResponseFlow = ai.defineFlow(
-  {
-    name: 'mentorFirstResponseFlow',
-    inputSchema: MentorFirstResponseInputSchema,
-    outputSchema: z.string(),
-  },
-  async input => {
-    const response = await ai.generate({
-      prompt: `
+export const mentorFirstResponseFlow =
+  (globalThis.__empoweru_first_response_flow as ReturnType<typeof ai.defineFlow>) ??
+  ai.defineFlow(
+    {
+      name: 'mentorFirstResponseFlow',
+      inputSchema: MentorFirstResponseInputSchema,
+      outputSchema: z.string(),
+    },
+    async input => {
+      const response = await ai.generate({
+        prompt: `
         You are a helpful and friendly AI mentor for a student named ${input.userName}.
         Your goal is to provide an initial greeting and ask some questions to get to know the user.
 
@@ -37,8 +45,12 @@ export const mentorFirstResponseFlow = ai.defineFlow(
             - What is your personal or family background (e.g., first-gen student, parenting status, etc.)?
             - What are your primary goals for seeking mentorship (e.g., college applications, career advice, etc.)?
       `,
-    });
+      });
 
-    return response.text ?? '';
-  },
-);
+      return response.text ?? '';
+    }
+  );
+
+if (!globalThis.__empoweru_first_response_flow) {
+  globalThis.__empoweru_first_response_flow = mentorFirstResponseFlow;
+}

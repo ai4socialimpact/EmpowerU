@@ -93,6 +93,7 @@ export function ChatInterface() {
   }, [messages]);
 
   const handleSendMessage = async (messageText?: string) => {
+    if (isLoading) return;
     const textToSend = messageText || input;
     if (!textToSend.trim() || !user) return;
     const chatDocRef = doc(firestore, 'users', user.uid, 'mentorChats', 'default');
@@ -227,6 +228,7 @@ export function ChatInterface() {
                         variant="outline"
                         size="sm"
                         className="w-full text-left justify-start"
+                        disabled={isLoading}
                         onClick={() => handleSendMessage(q)}>
                         {q}
                       </Button>
