@@ -56,14 +56,31 @@ function toIsoStringIfPossible(value: unknown): string | undefined {
   return undefined;
 }
 
-function formatMessageTime(isoString?: string): string {
-  if (!isoString) return '';
+function getValidDate(isoString?: string): Date | null {
+  if (!isoString) return null;
   const date = new Date(isoString);
-  if (Number.isNaN(date.getTime())) return '';
+  if (Number.isNaN(date.getTime())) return null;
+  return date;
+}
+
+function formatMessageTime(isoString?: string): string {
+  const date = getValidDate(isoString);
+  if (!date) return '';
 
   return new Intl.DateTimeFormat(undefined, {
     hour: 'numeric',
     minute: '2-digit',
+  }).format(date);
+}
+
+function formatMessageDate(isoString?: string): string {
+  const date = getValidDate(isoString);
+  if (!date) return '';
+
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
   }).format(date);
 }
 
@@ -272,7 +289,10 @@ export function ChatInterface() {
                     : 'bg-muted'
                 }`}>
                 <p className="whitespace-pre-wrap">{msg.text}</p>
-                <p className="mt-2 text-xs opacity-70">{formatMessageTime(msg.sentAt) || 'Now'}</p>
+                <div className="mt-2 flex items-center justify-between gap-3 text-xs opacity-70">
+                  <span>{formatMessageDate(msg.sentAt) || 'Today'}</span>
+                  <span className="text-right">{formatMessageTime(msg.sentAt) || 'Now'}</span>
+                </div>
                 {msg.role === 'model' && msg.relatedResources && msg.relatedResources.length > 0 && (
                   <div className="mt-4 space-y-2">
                     <p className="text-sm font-semibold">Related Resources:</p>
