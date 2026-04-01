@@ -24,12 +24,48 @@ import {doc, getDoc, serverTimestamp, setDoc} from 'firebase/firestore';
 type DisplayMessage = {
   role: 'user' | 'model';
   text: string;
+  sentAt?: string;
   followUpQuestions?: string[];
   relatedResources?: {
     title: string;
     url: string;
   }[];
 };
+
+function toIsoStringIfPossible(value: unknown): string | undefined {
+  if (!value) return undefined;
+  if (typeof value === 'string') return value;
+  if (value instanceof Date) return value.toISOString();
+
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    'toDate' in value &&
+    typeof (value as {toDate?: unknown}).toDate === 'function'
+  ) {
+    try {
+      const date = (value as {toDate: () => Date}).toDate();
+      if (date instanceof Date && !Number.isNaN(date.getTime())) {
+        return date.toISOString();
+      }
+    } catch {
+      return undefined;
+    }
+  }
+
+  return undefined;
+}
+
+function formatMessageTime(isoString?: string): string {
+  if (!isoString) return '';
+  const date = new Date(isoString);
+  if (Number.isNaN(date.getTime())) return '';
+
+  return new Intl.DateTimeFormat(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(date);
+}
 
 export function ChatInterface() {
   const {user, isUserLoading, firestore} = useFirebase();
@@ -49,7 +85,36 @@ export function ChatInterface() {
         if (existingConversation.exists()) {
           const savedMessages = existingConversation.data().messages;
           if (Array.isArray(savedMessages) && savedMessages.length > 0) {
-            setMessages(savedMessages as DisplayMessage[]);
+            const baseTime = Date.now();
+            let hasBackfilledTimestamps = false;
+            const normalizedMessages = savedMessages.map((msg, index) => {
+              const existingSentAt = toIsoStringIfPossible((msg as DisplayMessage).sentAt);
+              if (existingSentAt) {
+                return {
+                  ...msg,
+                  sentAt: existingSentAt,
+                };
+              }
+
+              hasBackfilledTimestamps = true;
+              return {
+                ...msg,
+                // Backfill older messages that predate sentAt so every bubble can show a time.
+                sentAt: new Date(baseTime - (savedMessages.length - 1 - index) * 60_000).toISOString(),
+              };
+            });
+            setMessages(normalizedMessages as DisplayMessage[]);
+
+            if (hasBackfilledTimestamps) {
+              await setDoc(
+                chatDocRef,
+                {
+                  messages: normalizedMessages,
+                  updatedAt: serverTimestamp(),
+                },
+                {merge: true}
+              );
+            }
             return;
           }
         }
@@ -60,6 +125,7 @@ export function ChatInterface() {
           {
             role: 'model',
             text: response,
+            sentAt: new Date().toISOString(),
           },
         ];
         setMessages(initialMessages);
@@ -101,6 +167,7 @@ export function ChatInterface() {
     const userMessage: DisplayMessage = {
       role: 'user',
       text: textToSend,
+      sentAt: new Date().toISOString(),
     };
 
     const messagesWithUser = [...messages, userMessage];
@@ -122,6 +189,7 @@ export function ChatInterface() {
       const modelMessage: DisplayMessage = {
         role: 'model',
         text: response.answer,
+        sentAt: new Date().toISOString(),
         followUpQuestions: response.followUpQuestions,
         relatedResources: response.relatedResources,
       };
@@ -204,6 +272,7 @@ export function ChatInterface() {
                     : 'bg-muted'
                 }`}>
                 <p className="whitespace-pre-wrap">{msg.text}</p>
+                <p className="mt-2 text-xs opacity-70">{formatMessageTime(msg.sentAt) || 'Now'}</p>
                 {msg.role === 'model' && msg.relatedResources && msg.relatedResources.length > 0 && (
                   <div className="mt-4 space-y-2">
                     <p className="text-sm font-semibold">Related Resources:</p>
