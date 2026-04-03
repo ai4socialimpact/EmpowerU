@@ -1,4 +1,4 @@
-import { AuthForm } from '@/components/auth-form';
+import { SignupForm } from '@/components/auth-form';
 import { Logo } from '@/components/logo';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 
@@ -16,7 +16,7 @@ export default function SignupPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <AuthForm mode="signup" />
+          <SignupForm />
         </CardContent>
       </Card>
     </main>

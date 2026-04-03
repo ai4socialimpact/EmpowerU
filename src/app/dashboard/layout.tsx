@@ -16,6 +16,7 @@ import {
   BookOpen,
   GraduationCap,
   LogIn,
+  Shield,
 } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
@@ -24,6 +25,7 @@ import { Logo } from '@/components/logo';
 import { Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useFirebase } from '@/firebase/provider';
+import { doc, getDoc } from 'firebase/firestore';
 
 export default function DashboardLayout({
   children,
@@ -31,7 +33,44 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
-  const { user, isUserLoading } = useFirebase();
+  const { user, isUserLoading, firestore } = useFirebase();
+  const [isAdmin, setIsAdmin] = React.useState(false);
+  const [isAdminLoading, setIsAdminLoading] = React.useState(true);
+
+  React.useEffect(() => {
+    let isMounted = true;
+
+    async function resolveAdminStatus() {
+      if (!user) {
+        if (isMounted) {
+          setIsAdmin(false);
+          setIsAdminLoading(false);
+        }
+        return;
+      }
+
+      try {
+        const adminDocRef = doc(firestore, 'admins', user.uid);
+        const adminDoc = await getDoc(adminDocRef);
+        if (isMounted) {
+          setIsAdmin(adminDoc.exists());
+        }
+      } catch {
+        if (isMounted) {
+          setIsAdmin(false);
+        }
+      } finally {
+        if (isMounted) {
+          setIsAdminLoading(false);
+        }
+      }
+    }
+
+    resolveAdminStatus();
+    return () => {
+      isMounted = false;
+    };
+  }, [user, firestore]);
 
   if (isUserLoading) {
     return (
@@ -97,6 +136,20 @@ export default function DashboardLayout({
                 </Link>
               </SidebarMenuButton>
             </SidebarMenuItem>
+            {!isAdminLoading && isAdmin && (
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  asChild
+                  isActive={pathname.startsWith('/dashboard/admin')}
+                  tooltip="Admin Chats"
+                >
+                  <Link href="/dashboard/admin/chats">
+                    <Shield />
+                    <span className="group-data-[collapsible=icon]:hidden">Admin Chats</span>
+                  </Link>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            )}
           </SidebarMenu>
         </SidebarContent>
         <SidebarFooter>

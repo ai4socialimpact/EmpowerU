@@ -20,6 +20,17 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
 
     /**
      * @description Enforces access control for user profiles. Only the authenticated user can read and write their own profile.
@@ -30,16 +41,12 @@ service cloud.firestore {
      * @principle Enforces document ownership for all operations.
      */
     match /users/{userId} {
-      function isOwner(userId) {
-        return request.auth.uid == userId;
-      }
-
       function isExistingOwner(userId) {
         return isOwner(userId) && resource != null;
       }
 
-      allow get: if isOwner(userId);
-      allow list: if false;
+      allow get: if isOwner(userId) || isAdmin();
+      allow list: if isAdmin();
       allow create: if isOwner(userId);
       allow update: if isExistingOwner(userId);
       allow delete: if false; // Prevent user deletion of profile.
@@ -55,19 +62,59 @@ service cloud.firestore {
      * @principle Enforces document ownership for all operations.
      */
     match /users/{userId}/chatMessages/{messageId} {
-        function isOwner(userId) {
-            return request.auth.uid == userId;
-        }
-
         function isExistingOwner(userId) {
             return isOwner(userId) && resource != null;
         }
 
-        allow get: if isOwner(userId);
-        allow list: if isOwner(userId);
+        allow get: if isOwner(userId) || isAdmin();
+        allow list: if isOwner(userId) || isAdmin();
         allow create: if isOwner(userId) && request.resource.data.userProfileId == userId;
         allow update: if isExistingOwner(userId) && request.resource.data.userProfileId == userId;
         allow delete: if false; // Consider marking the message as deleted instead of deleting.
+    }
+
+    /**
+     * @description Enforces access control for mentor chat sessions. Only the authenticated user can read and write their own sessions.
+     * @path /users/{userId}/mentorChats/{chatId}
+     */
+    match /users/{userId}/mentorChats/{chatId} {
+      function isExistingOwner(userId) {
+        return isOwner(userId) && resource != null;
+      }
+
+      allow get: if isOwner(userId) || isAdmin();
+      allow list: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId);
+      allow update: if isExistingOwner(userId);
+      allow delete: if false;
+    }
+
+    /**
+     * @description Enforces access control for mentor chat messages. Only the authenticated user can read and write their own messages.
+     * @path /users/{userId}/mentorChats/{chatId}/messages/{messageId}
+     */
+    match /users/{userId}/mentorChats/{chatId}/messages/{messageId} {
+      function isExistingOwner(userId) {
+        return isOwner(userId) && resource != null;
+      }
+
+      allow get: if isOwner(userId) || isAdmin();
+      allow list: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId);
+      allow update: if isExistingOwner(userId);
+      allow delete: if false;
+    }
+
+    /**
+     * @description Stores admin role assignments. Create/update/delete should be done via Admin SDK only.
+     * @path /admins/{adminUserId}
+     */
+    match /admins/{adminUserId} {
+      allow get: if isSignedIn() && (request.auth.uid == adminUserId || isAdmin());
+      allow list: if false;
+      allow create: if false;
+      allow update: if false;
+      allow delete: if false;
     }
 
     /**
@@ -94,16 +141,12 @@ service cloud.firestore {
      * @principle Enforces document ownership for all operations.
      */
     match /users/{userId}/recommendations/{recommendationId} {
-      function isOwner(userId) {
-          return request.auth.uid == userId;
-      }
-
       function isExistingOwner(userId) {
         return isOwner(userId) && resource != null;
       }
 
-      allow get: if isOwner(userId);
-      allow list: if isOwner(userId);
+      allow get: if isOwner(userId) || isAdmin();
+      allow list: if isOwner(userId) || isAdmin();
       allow create: if isOwner(userId) && request.resource.data.userProfileId == userId;
       allow update: if isExistingOwner(userId) && request.resource.data.userProfileId == userId;
       allow delete: if false;

@@ -1,4 +1,4 @@
-import { AuthForm } from '@/components/auth-form';
+import { LoginForm } from '@/components/auth-form';
 import { Logo } from '@/components/logo';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 
@@ -14,7 +14,7 @@ export default function LoginPage() {
           <CardDescription>Enter your credentials to access your account</CardDescription>
         </CardHeader>
         <CardContent>
-          <AuthForm mode="login" />
+          <LoginForm />
         </CardContent>
       </Card>
     </main>

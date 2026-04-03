@@ -19,9 +19,20 @@ import {Button} from '@/components/ui/button';
 import {useToast} from '@/hooks/use-toast';
 import Link from 'next/link';
 import { FileText } from 'lucide-react';
-import {doc, getDoc, serverTimestamp, setDoc} from 'firebase/firestore';
+import {
+  addDoc,
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  orderBy,
+  query,
+  serverTimestamp,
+  setDoc,
+} from 'firebase/firestore';
 
 type DisplayMessage = {
+  id?: string;
   role: 'user' | 'model';
   text: string;
   sentAt?: string;
@@ -34,7 +45,15 @@ type DisplayMessage = {
 
 function toIsoStringIfPossible(value: unknown): string | undefined {
   if (!value) return undefined;
-  if (typeof value === 'string') return value;
+  if (typeof value === 'string') {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
+  }
+  if (typeof value === 'number') {
+    const asMs = value < 10_000_000_000 ? value * 1000 : value;
+    const parsed = new Date(asMs);
+    return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
+  }
   if (value instanceof Date) return value.toISOString();
 
   if (
@@ -50,6 +69,22 @@ function toIsoStringIfPossible(value: unknown): string | undefined {
       }
     } catch {
       return undefined;
+    }
+  }
+
+  if (typeof value === 'object' && value !== null) {
+    const maybeTimestamp = value as {
+      seconds?: unknown;
+      nanoseconds?: unknown;
+      _seconds?: unknown;
+      _nanoseconds?: unknown;
+    };
+    const rawSeconds = maybeTimestamp.seconds ?? maybeTimestamp._seconds;
+    const rawNanoseconds = maybeTimestamp.nanoseconds ?? maybeTimestamp._nanoseconds;
+    if (typeof rawSeconds === 'number') {
+      const nanos = typeof rawNanoseconds === 'number' ? rawNanoseconds : 0;
+      const parsed = new Date(rawSeconds * 1000 + Math.floor(nanos / 1_000_000));
+      return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
     }
   }
 
@@ -95,63 +130,115 @@ export function ChatInterface() {
   useEffect(() => {
     async function loadConversation() {
       if (!user) return;
+      const userDocRef = doc(firestore, 'users', user.uid);
       const chatDocRef = doc(firestore, 'users', user.uid, 'mentorChats', 'default');
+      const messagesColRef = collection(chatDocRef, 'messages');
 
       try {
+        await setDoc(
+          userDocRef,
+          {
+            uid: user.uid,
+            displayName: user.displayName ?? null,
+            email: user.email ?? null,
+            updatedAt: serverTimestamp(),
+          },
+          {merge: true}
+        );
+
+        const messagesQuery = query(messagesColRef, orderBy('sentAt', 'asc'));
+        const existingMessagesSnapshot = await getDocs(messagesQuery);
+
+        if (!existingMessagesSnapshot.empty) {
+          const loadedMessages: DisplayMessage[] = existingMessagesSnapshot.docs.map((messageDoc) => {
+            const data = messageDoc.data() as Omit<DisplayMessage, 'id'>;
+            return {
+              id: messageDoc.id,
+              role: data.role,
+              text: data.text,
+              sentAt: toIsoStringIfPossible(data.sentAt),
+              followUpQuestions: data.followUpQuestions,
+              relatedResources: data.relatedResources,
+            };
+          });
+          setMessages(loadedMessages);
+          return;
+        }
+
         const existingConversation = await getDoc(chatDocRef);
+        // One-time fallback/migration for existing array-based conversations.
         if (existingConversation.exists()) {
           const savedMessages = existingConversation.data().messages;
           if (Array.isArray(savedMessages) && savedMessages.length > 0) {
             const baseTime = Date.now();
-            let hasBackfilledTimestamps = false;
-            const normalizedMessages = savedMessages.map((msg, index) => {
-              const existingSentAt = toIsoStringIfPossible((msg as DisplayMessage).sentAt);
-              if (existingSentAt) {
-                return {
-                  ...msg,
-                  sentAt: existingSentAt,
+            const migratedMessages = await Promise.all(
+              savedMessages.map(async (msg, index) => {
+                const message = msg as DisplayMessage;
+                const sentAt = toIsoStringIfPossible(message.sentAt) ??
+                  new Date(baseTime - (savedMessages.length - 1 - index) * 60_000).toISOString();
+
+                const newMessage = {
+                  role: message.role,
+                  text: message.text,
+                  sentAt,
+                  followUpQuestions: message.followUpQuestions ?? [],
+                  relatedResources: message.relatedResources ?? [],
                 };
-              }
 
-              hasBackfilledTimestamps = true;
-              return {
-                ...msg,
-                // Backfill older messages that predate sentAt so every bubble can show a time.
-                sentAt: new Date(baseTime - (savedMessages.length - 1 - index) * 60_000).toISOString(),
-              };
-            });
-            setMessages(normalizedMessages as DisplayMessage[]);
+                const createdDoc = await addDoc(messagesColRef, {
+                  ...newMessage,
+                  sentAt: new Date(sentAt),
+                });
 
-            if (hasBackfilledTimestamps) {
-              await setDoc(
-                chatDocRef,
-                {
-                  messages: normalizedMessages,
-                  updatedAt: serverTimestamp(),
-                },
-                {merge: true}
-              );
-            }
+                return {
+                  id: createdDoc.id,
+                  ...newMessage,
+                };
+              })
+            );
+
+            setMessages(migratedMessages);
+            await setDoc(
+              chatDocRef,
+              {
+                createdAt: existingConversation.data().createdAt ?? serverTimestamp(),
+                updatedAt: serverTimestamp(),
+                messageCount: migratedMessages.length,
+                lastMessagePreview: migratedMessages[migratedMessages.length - 1]?.text ?? '',
+              },
+              {merge: true}
+            );
             return;
           }
         }
 
         const firstName = user.displayName?.split(' ')?.[0] || 'friend';
         const response = await mentorFirstResponse({userName: firstName});
-        const initialMessages: DisplayMessage[] = [
+        const initialMessage = {
+          role: 'model' as const,
+          text: response,
+          sentAt: new Date().toISOString(),
+          followUpQuestions: [] as string[],
+          relatedResources: [] as {title: string; url: string;}[],
+        };
+        const initialMessageRef = await addDoc(messagesColRef, {
+          ...initialMessage,
+          sentAt: new Date(initialMessage.sentAt),
+        });
+        setMessages([
           {
-            role: 'model',
-            text: response,
-            sentAt: new Date().toISOString(),
+            id: initialMessageRef.id,
+            ...initialMessage,
           },
-        ];
-        setMessages(initialMessages);
+        ]);
         await setDoc(
           chatDocRef,
           {
-            messages: initialMessages,
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
+            title: 'AI Mentor Chat',
+            messageCount: 1,
+            lastMessagePreview: response,
           },
           {merge: true}
         );
@@ -179,12 +266,15 @@ export function ChatInterface() {
     if (isLoading) return;
     const textToSend = messageText || input;
     if (!textToSend.trim() || !user) return;
+    const userDocRef = doc(firestore, 'users', user.uid);
     const chatDocRef = doc(firestore, 'users', user.uid, 'mentorChats', 'default');
 
     const userMessage: DisplayMessage = {
       role: 'user',
       text: textToSend,
       sentAt: new Date().toISOString(),
+      followUpQuestions: [],
+      relatedResources: [],
     };
 
     const messagesWithUser = [...messages, userMessage];
@@ -193,6 +283,33 @@ export function ChatInterface() {
     setIsLoading(true);
 
     try {
+      await setDoc(
+        userDocRef,
+        {
+          uid: user.uid,
+          displayName: user.displayName ?? null,
+          email: user.email ?? null,
+          updatedAt: serverTimestamp(),
+        },
+        {merge: true}
+      );
+
+      const messagesColRef = collection(chatDocRef, 'messages');
+      const userMessageRef = await addDoc(messagesColRef, {
+        role: userMessage.role,
+        text: userMessage.text,
+        sentAt: new Date(userMessage.sentAt ?? new Date().toISOString()),
+        followUpQuestions: [],
+        relatedResources: [],
+      });
+
+      const userMessageWithId: DisplayMessage = {
+        ...userMessage,
+        id: userMessageRef.id,
+      };
+      const messagesAfterUserWrite = [...messages, userMessageWithId];
+      setMessages(messagesAfterUserWrite);
+
       const history: MentorChatInput['history'] = messages.map(msg => ({
         role: msg.role,
         content: [{text: msg.text}],
@@ -210,13 +327,27 @@ export function ChatInterface() {
         followUpQuestions: response.followUpQuestions,
         relatedResources: response.relatedResources,
       };
-      const updatedMessages = [...messagesWithUser, modelMessage];
+      const modelMessageRef = await addDoc(messagesColRef, {
+        role: modelMessage.role,
+        text: modelMessage.text,
+        sentAt: new Date(modelMessage.sentAt ?? new Date().toISOString()),
+        followUpQuestions: modelMessage.followUpQuestions ?? [],
+        relatedResources: modelMessage.relatedResources ?? [],
+      });
+      const updatedMessages = [
+        ...messagesAfterUserWrite,
+        {
+          ...modelMessage,
+          id: modelMessageRef.id,
+        },
+      ];
       setMessages(updatedMessages);
       await setDoc(
         chatDocRef,
         {
-          messages: updatedMessages,
           updatedAt: serverTimestamp(),
+          messageCount: updatedMessages.length,
+          lastMessagePreview: modelMessage.text,
         },
         {merge: true}
       );
@@ -269,7 +400,7 @@ export function ChatInterface() {
         <div className="space-y-4">
           {messages.map((msg, index) => (
             <div
-              key={index}
+              key={msg.id ?? `${msg.role}-${index}-${msg.text.slice(0, 20)}`}
               className={`flex items-start gap-4 ${
                 msg.role === 'user' ? 'justify-end' : ''
               }`}>
