@@ -17,10 +17,17 @@ import {Avatar, AvatarFallback, AvatarImage} from '@/components/ui/avatar';
 import { Textarea } from '@/components/ui/textarea';
 import {Button} from '@/components/ui/button';
 import {useToast} from '@/hooks/use-toast';
+import {
+  dedupeMessagesByRoleAndText,
+  formatDateShort,
+  formatTimeShort,
+  getConversationIndexId,
+  isLikelyDuplicateMessage,
+  toIsoStringIfPossible,
+} from '@/lib/chat-message-utils';
 import Link from 'next/link';
 import { FileText } from 'lucide-react';
 import {
-  addDoc,
   collection,
   deleteDoc,
   doc,
@@ -45,111 +52,26 @@ type DisplayMessage = {
 };
 
 function dedupeStoredMessages(messages: DisplayMessage[]): DisplayMessage[] {
-  const sorted = [...messages].sort((a, b) => {
-    const aTime = getValidDate(a.sentAt)?.getTime() ?? 0;
-    const bTime = getValidDate(b.sentAt)?.getTime() ?? 0;
-    return aTime - bTime;
-  });
-  const deduped: DisplayMessage[] = [];
-
-  for (const message of sorted) {
-    const previous = deduped[deduped.length - 1];
-    if (previous && isLikelyDuplicateMessage(previous, message)) continue;
-    deduped.push(message);
-  }
-
-  return deduped;
-}
-
-function isLikelyDuplicateMessage(
-  a: Pick<DisplayMessage, 'role' | 'text' | 'sentAt'>,
-  b: Pick<DisplayMessage, 'role' | 'text' | 'sentAt'>
-): boolean {
-  if (a.role !== b.role) return false;
-  if ((a.text ?? '').trim() !== (b.text ?? '').trim()) return false;
-
-  const aTime = getValidDate(a.sentAt)?.getTime();
-  const bTime = getValidDate(b.sentAt)?.getTime();
-  if (!aTime || !bTime) return true;
-
-  // Treat near-identical repeats as accidental double writes.
-  return Math.abs(aTime - bTime) <= 120_000;
-}
-
-function toIsoStringIfPossible(value: unknown): string | undefined {
-  if (!value) return undefined;
-  if (typeof value === 'string') {
-    const parsed = new Date(value);
-    return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
-  }
-  if (typeof value === 'number') {
-    const asMs = value < 10_000_000_000 ? value * 1000 : value;
-    const parsed = new Date(asMs);
-    return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
-  }
-  if (value instanceof Date) return value.toISOString();
-
-  if (
-    typeof value === 'object' &&
-    value !== null &&
-    'toDate' in value &&
-    typeof (value as {toDate?: unknown}).toDate === 'function'
-  ) {
-    try {
-      const date = (value as {toDate: () => Date}).toDate();
-      if (date instanceof Date && !Number.isNaN(date.getTime())) {
-        return date.toISOString();
-      }
-    } catch {
-      return undefined;
-    }
-  }
-
-  if (typeof value === 'object' && value !== null) {
-    const maybeTimestamp = value as {
-      seconds?: unknown;
-      nanoseconds?: unknown;
-      _seconds?: unknown;
-      _nanoseconds?: unknown;
-    };
-    const rawSeconds = maybeTimestamp.seconds ?? maybeTimestamp._seconds;
-    const rawNanoseconds = maybeTimestamp.nanoseconds ?? maybeTimestamp._nanoseconds;
-    if (typeof rawSeconds === 'number') {
-      const nanos = typeof rawNanoseconds === 'number' ? rawNanoseconds : 0;
-      const parsed = new Date(rawSeconds * 1000 + Math.floor(nanos / 1_000_000));
-      return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
-    }
-  }
-
-  return undefined;
-}
-
-function getValidDate(isoString?: string): Date | null {
-  if (!isoString) return null;
-  const date = new Date(isoString);
-  if (Number.isNaN(date.getTime())) return null;
-  return date;
+  return dedupeMessagesByRoleAndText(messages);
 }
 
 function formatMessageTime(isoString?: string): string {
-  const date = getValidDate(isoString);
-  if (!date) return '';
-
-  return new Intl.DateTimeFormat(undefined, {
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(date);
+  const formatted = formatTimeShort(isoString);
+  return formatted === '--' ? '' : formatted;
 }
 
 function formatMessageDate(isoString?: string): string {
-  const date = getValidDate(isoString);
-  if (!date) return '';
+  const formatted = formatDateShort(isoString);
+  return formatted === '--' ? '' : formatted;
+}
 
-  return new Intl.DateTimeFormat(undefined, {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  }).format(date);
+async function stableMessageId(seed: string): Promise<string> {
+  const encoded = new TextEncoder().encode(seed);
+  const digest = await crypto.subtle.digest('SHA-256', encoded);
+  const hex = Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+  return `m_${hex.slice(0, 40)}`;
 }
 
 export function ChatInterface() {
@@ -160,12 +82,41 @@ export function ChatInterface() {
   const isSendingRef = useRef(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const {toast} = useToast();
+  const chatId = 'default';
+
+  const upsertConversationIndex = async (params: {
+    uid: string;
+    chatId: string;
+    messageCount: number;
+    lastMessagePreview: string;
+    latestSentAt?: string;
+    created?: boolean;
+  }) => {
+    const indexDocRef = doc(firestore, 'conversationIndex', getConversationIndexId(params.uid, params.chatId));
+
+    await setDoc(
+      indexDocRef,
+      {
+        uid: params.uid,
+        displayName: user?.displayName ?? null,
+        email: user?.email ?? null,
+        chatId: params.chatId,
+        title: 'AI Mentor Chat',
+        messageCount: params.messageCount,
+        lastMessagePreview: params.lastMessagePreview,
+        latestAt: params.latestSentAt ? new Date(params.latestSentAt) : serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        ...(params.created ? {createdAt: serverTimestamp()} : {}),
+      },
+      {merge: true}
+    );
+  };
 
   useEffect(() => {
     async function loadConversation() {
       if (!user) return;
       const userDocRef = doc(firestore, 'users', user.uid);
-      const chatDocRef = doc(firestore, 'users', user.uid, 'mentorChats', 'default');
+      const chatDocRef = doc(firestore, 'users', user.uid, 'mentorChats', chatId);
       const messagesColRef = collection(chatDocRef, 'messages');
 
       try {
@@ -186,6 +137,7 @@ export function ChatInterface() {
         if (!existingMessagesSnapshot.empty) {
           const duplicateDocRefs: Array<ReturnType<typeof doc>> = [];
           const uniqueMessages: DisplayMessage[] = [];
+          const lastSeenByContent = new Map<string, DisplayMessage>();
 
           for (const messageDoc of existingMessagesSnapshot.docs) {
             const data = messageDoc.data() as Omit<DisplayMessage, 'id'>;
@@ -197,13 +149,15 @@ export function ChatInterface() {
               followUpQuestions: data.followUpQuestions,
               relatedResources: data.relatedResources,
             };
-            const previous = uniqueMessages[uniqueMessages.length - 1];
-            if (previous && isLikelyDuplicateMessage(previous, normalizedMessage)) {
+            const key = `${normalizedMessage.role}|${(normalizedMessage.text ?? '').trim()}`;
+            const previousMatch = lastSeenByContent.get(key);
+            if (previousMatch && isLikelyDuplicateMessage(previousMatch, normalizedMessage)) {
               duplicateDocRefs.push(messageDoc.ref);
               continue;
             }
 
             uniqueMessages.push(normalizedMessage);
+            lastSeenByContent.set(key, normalizedMessage);
           }
 
           if (duplicateDocRefs.length > 0) {
@@ -219,6 +173,14 @@ export function ChatInterface() {
             );
           }
 
+          await upsertConversationIndex({
+            uid: user.uid,
+            chatId,
+            messageCount: uniqueMessages.length,
+            lastMessagePreview: uniqueMessages[uniqueMessages.length - 1]?.text ?? '',
+            latestSentAt: uniqueMessages[uniqueMessages.length - 1]?.sentAt,
+          });
+
           setMessages(dedupeStoredMessages(uniqueMessages));
           return;
         }
@@ -229,28 +191,35 @@ export function ChatInterface() {
           const savedMessages = existingConversation.data().messages;
           if (Array.isArray(savedMessages) && savedMessages.length > 0) {
             const baseTime = Date.now();
+            const normalizedLegacyMessages: DisplayMessage[] = savedMessages.map((msg, index) => {
+              const message = msg as DisplayMessage;
+              const sentAt = toIsoStringIfPossible(message.sentAt) ??
+                new Date(baseTime - (savedMessages.length - 1 - index) * 60_000).toISOString();
+
+              return {
+                role: message.role,
+                text: message.text,
+                sentAt,
+                followUpQuestions: message.followUpQuestions ?? [],
+                relatedResources: message.relatedResources ?? [],
+              };
+            });
+
+            const dedupedLegacyMessages = dedupeStoredMessages(normalizedLegacyMessages);
             const migratedMessages = await Promise.all(
-              savedMessages.map(async (msg, index) => {
-                const message = msg as DisplayMessage;
-                const sentAt = toIsoStringIfPossible(message.sentAt) ??
-                  new Date(baseTime - (savedMessages.length - 1 - index) * 60_000).toISOString();
+              dedupedLegacyMessages.map(async (message, index) => {
+                const migratedMessageId = await stableMessageId(
+                  `legacy|${user.uid}|${chatId}|${index}|${message.role}|${message.text}|${message.sentAt}`
+                );
 
-                const newMessage = {
-                  role: message.role,
-                  text: message.text,
-                  sentAt,
-                  followUpQuestions: message.followUpQuestions ?? [],
-                  relatedResources: message.relatedResources ?? [],
-                };
-
-                const createdDoc = await addDoc(messagesColRef, {
-                  ...newMessage,
-                  sentAt: new Date(sentAt),
+                await setDoc(doc(messagesColRef, migratedMessageId), {
+                  ...message,
+                  sentAt: new Date(message.sentAt ?? new Date().toISOString()),
                 });
 
                 return {
-                  id: createdDoc.id,
-                  ...newMessage,
+                  id: migratedMessageId,
+                  ...message,
                 };
               })
             );
@@ -266,6 +235,13 @@ export function ChatInterface() {
               },
               {merge: true}
             );
+            await upsertConversationIndex({
+              uid: user.uid,
+              chatId,
+              messageCount: migratedMessages.length,
+              lastMessagePreview: migratedMessages[migratedMessages.length - 1]?.text ?? '',
+              latestSentAt: migratedMessages[migratedMessages.length - 1]?.sentAt,
+            });
             return;
           }
         }
@@ -279,13 +255,14 @@ export function ChatInterface() {
           followUpQuestions: [] as string[],
           relatedResources: [] as {title: string; url: string;}[],
         };
-        const initialMessageRef = await addDoc(messagesColRef, {
+        const initialMessageId = await stableMessageId(`initial|${user.uid}|${chatId}|model`);
+        await setDoc(doc(messagesColRef, initialMessageId), {
           ...initialMessage,
           sentAt: new Date(initialMessage.sentAt),
         });
         setMessages([
           {
-            id: initialMessageRef.id,
+            id: initialMessageId,
             ...initialMessage,
           },
         ]);
@@ -300,6 +277,14 @@ export function ChatInterface() {
           },
           {merge: true}
         );
+        await upsertConversationIndex({
+          uid: user.uid,
+          chatId,
+          messageCount: 1,
+          lastMessagePreview: response,
+          latestSentAt: initialMessage.sentAt,
+          created: true,
+        });
       } catch (error) {
         console.error('Failed to get initial AI response:', error);
         toast({
@@ -314,7 +299,7 @@ export function ChatInterface() {
     if (user) {
       loadConversation();
     }
-  }, [user, firestore, toast]);
+  }, [user, firestore, toast, chatId]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({behavior: 'smooth'});
@@ -326,7 +311,7 @@ export function ChatInterface() {
     if (!textToSend || !user) return;
     isSendingRef.current = true;
     const userDocRef = doc(firestore, 'users', user.uid);
-    const chatDocRef = doc(firestore, 'users', user.uid, 'mentorChats', 'default');
+    const chatDocRef = doc(firestore, 'users', user.uid, 'mentorChats', chatId);
 
     const userMessage: DisplayMessage = {
       role: 'user',
@@ -354,7 +339,12 @@ export function ChatInterface() {
       );
 
       const messagesColRef = collection(chatDocRef, 'messages');
-      const userMessageRef = await addDoc(messagesColRef, {
+      const anchorId = messages[messages.length - 1]?.id ?? 'root';
+      const userMessageId = await stableMessageId(
+        `user|${user.uid}|${chatId}|${anchorId}|${textToSend}`
+      );
+      const userMessageRef = doc(messagesColRef, userMessageId);
+      await setDoc(userMessageRef, {
         role: userMessage.role,
         text: userMessage.text,
         sentAt: new Date(userMessage.sentAt ?? new Date().toISOString()),
@@ -386,7 +376,9 @@ export function ChatInterface() {
         followUpQuestions: response.followUpQuestions,
         relatedResources: response.relatedResources,
       };
-      const modelMessageRef = await addDoc(messagesColRef, {
+      const modelMessageId = await stableMessageId(`model|${user.uid}|${chatId}|${userMessageId}`);
+      const modelMessageRef = doc(messagesColRef, modelMessageId);
+      await setDoc(modelMessageRef, {
         role: modelMessage.role,
         text: modelMessage.text,
         sentAt: new Date(modelMessage.sentAt ?? new Date().toISOString()),
@@ -410,6 +402,13 @@ export function ChatInterface() {
         },
         {merge: true}
       );
+      await upsertConversationIndex({
+        uid: user.uid,
+        chatId,
+        messageCount: updatedMessages.length,
+        lastMessagePreview: modelMessage.text,
+        latestSentAt: modelMessage.sentAt,
+      });
     } catch (error) {
       console.error('Failed to get AI response:', error);
       toast({

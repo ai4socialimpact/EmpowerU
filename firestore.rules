@@ -118,6 +118,22 @@ service cloud.firestore {
     }
 
     /**
+     * @description Top-level conversation summary index for admin dashboards and fast listing.
+     * @path /conversationIndex/{indexId}
+     */
+    match /conversationIndex/{indexId} {
+      allow get: if isAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid);
+      allow list: if isAdmin();
+      allow create: if isAdmin() || (isSignedIn() && request.resource.data.uid == request.auth.uid);
+      allow update: if isAdmin() || (
+        isSignedIn() &&
+        resource.data.uid == request.resource.data.uid &&
+        request.resource.data.uid == request.auth.uid
+      );
+      allow delete: if false;
+    }
+
+    /**
      * @description Allows public read access to learning resources.
      * @path /resources/{resourceId}
      * @allow (get, list) Public read access to all resources.
