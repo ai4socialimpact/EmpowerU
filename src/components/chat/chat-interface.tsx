@@ -22,6 +22,7 @@ import { FileText } from 'lucide-react';
 import {
   addDoc,
   collection,
+  deleteDoc,
   doc,
   getDoc,
   getDocs,
@@ -42,6 +43,38 @@ type DisplayMessage = {
     url: string;
   }[];
 };
+
+function dedupeStoredMessages(messages: DisplayMessage[]): DisplayMessage[] {
+  const sorted = [...messages].sort((a, b) => {
+    const aTime = getValidDate(a.sentAt)?.getTime() ?? 0;
+    const bTime = getValidDate(b.sentAt)?.getTime() ?? 0;
+    return aTime - bTime;
+  });
+  const deduped: DisplayMessage[] = [];
+
+  for (const message of sorted) {
+    const previous = deduped[deduped.length - 1];
+    if (previous && isLikelyDuplicateMessage(previous, message)) continue;
+    deduped.push(message);
+  }
+
+  return deduped;
+}
+
+function isLikelyDuplicateMessage(
+  a: Pick<DisplayMessage, 'role' | 'text' | 'sentAt'>,
+  b: Pick<DisplayMessage, 'role' | 'text' | 'sentAt'>
+): boolean {
+  if (a.role !== b.role) return false;
+  if ((a.text ?? '').trim() !== (b.text ?? '').trim()) return false;
+
+  const aTime = getValidDate(a.sentAt)?.getTime();
+  const bTime = getValidDate(b.sentAt)?.getTime();
+  if (!aTime || !bTime) return true;
+
+  // Treat near-identical repeats as accidental double writes.
+  return Math.abs(aTime - bTime) <= 120_000;
+}
 
 function toIsoStringIfPossible(value: unknown): string | undefined {
   if (!value) return undefined;
@@ -124,6 +157,7 @@ export function ChatInterface() {
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(true);
+  const isSendingRef = useRef(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const {toast} = useToast();
 
@@ -150,9 +184,12 @@ export function ChatInterface() {
         const existingMessagesSnapshot = await getDocs(messagesQuery);
 
         if (!existingMessagesSnapshot.empty) {
-          const loadedMessages: DisplayMessage[] = existingMessagesSnapshot.docs.map((messageDoc) => {
+          const duplicateDocRefs: Array<ReturnType<typeof doc>> = [];
+          const uniqueMessages: DisplayMessage[] = [];
+
+          for (const messageDoc of existingMessagesSnapshot.docs) {
             const data = messageDoc.data() as Omit<DisplayMessage, 'id'>;
-            return {
+            const normalizedMessage: DisplayMessage = {
               id: messageDoc.id,
               role: data.role,
               text: data.text,
@@ -160,8 +197,29 @@ export function ChatInterface() {
               followUpQuestions: data.followUpQuestions,
               relatedResources: data.relatedResources,
             };
-          });
-          setMessages(loadedMessages);
+            const previous = uniqueMessages[uniqueMessages.length - 1];
+            if (previous && isLikelyDuplicateMessage(previous, normalizedMessage)) {
+              duplicateDocRefs.push(messageDoc.ref);
+              continue;
+            }
+
+            uniqueMessages.push(normalizedMessage);
+          }
+
+          if (duplicateDocRefs.length > 0) {
+            await Promise.allSettled(duplicateDocRefs.map((messageRef) => deleteDoc(messageRef)));
+            await setDoc(
+              chatDocRef,
+              {
+                updatedAt: serverTimestamp(),
+                messageCount: uniqueMessages.length,
+                lastMessagePreview: uniqueMessages[uniqueMessages.length - 1]?.text ?? '',
+              },
+              {merge: true}
+            );
+          }
+
+          setMessages(dedupeStoredMessages(uniqueMessages));
           return;
         }
 
@@ -197,7 +255,7 @@ export function ChatInterface() {
               })
             );
 
-            setMessages(migratedMessages);
+            setMessages(dedupeStoredMessages(migratedMessages));
             await setDoc(
               chatDocRef,
               {
@@ -263,9 +321,10 @@ export function ChatInterface() {
   }, [messages]);
 
   const handleSendMessage = async (messageText?: string) => {
-    if (isLoading) return;
-    const textToSend = messageText || input;
-    if (!textToSend.trim() || !user) return;
+    if (isLoading || isSendingRef.current) return;
+    const textToSend = (messageText ?? input).trim();
+    if (!textToSend || !user) return;
+    isSendingRef.current = true;
     const userDocRef = doc(firestore, 'users', user.uid);
     const chatDocRef = doc(firestore, 'users', user.uid, 'mentorChats', 'default');
 
@@ -359,6 +418,7 @@ export function ChatInterface() {
       });
     } finally {
       setIsLoading(false);
+      isSendingRef.current = false;
     }
   };
 

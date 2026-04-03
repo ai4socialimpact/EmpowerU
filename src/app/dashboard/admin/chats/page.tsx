@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useFirebase } from '@/firebase/provider';
-import { collectionGroup, doc, getDoc, getDocs, orderBy, query, Timestamp } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, orderBy, query, Timestamp } from 'firebase/firestore';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 
@@ -22,6 +22,41 @@ type ConversationGroup = {
   messages: AdminMessage[];
   latestAt: string;
 };
+
+function dedupeAdminMessages(messages: AdminMessage[]): AdminMessage[] {
+  const sorted = [...messages].sort((a, b) => {
+    if (a.uid !== b.uid) return a.uid.localeCompare(b.uid);
+    if (a.chatId !== b.chatId) return a.chatId.localeCompare(b.chatId);
+    const aTime = new Date(a.sentAt || 0).getTime();
+    const bTime = new Date(b.sentAt || 0).getTime();
+    return aTime - bTime;
+  });
+  const deduped: AdminMessage[] = [];
+
+  for (const message of sorted) {
+    const previous = deduped[deduped.length - 1];
+    if (
+      previous &&
+      previous.uid === message.uid &&
+      previous.chatId === message.chatId &&
+      previous.role === message.role &&
+      (previous.text ?? '').trim() === (message.text ?? '').trim()
+    ) {
+      const prevTime = new Date(previous.sentAt || 0).getTime();
+      const currentTime = new Date(message.sentAt || 0).getTime();
+      if (
+        (!Number.isNaN(prevTime) && !Number.isNaN(currentTime) && Math.abs(prevTime - currentTime) <= 120_000) ||
+        Number.isNaN(prevTime) ||
+        Number.isNaN(currentTime)
+      ) {
+        continue;
+      }
+    }
+    deduped.push(message);
+  }
+
+  return deduped;
+}
 
 function toIsoStringIfPossible(value: unknown): string | undefined {
   if (!value) return undefined;
@@ -169,40 +204,38 @@ export default function AdminChatsPage() {
         }
 
         const loadedMessages: AdminMessage[] = [];
-        const messagesQuery = query(collectionGroup(firestore, 'messages'), orderBy('sentAt', 'asc'));
-        const messagesSnapshot = await getDocs(messagesQuery);
+        const usersSnapshot = await getDocs(collection(firestore, 'users'));
 
-        for (const messageDoc of messagesSnapshot.docs) {
-          const pathSegments = messageDoc.ref.path.split('/');
-          const isMentorChatMessagePath =
-            pathSegments.length >= 6 &&
-            pathSegments[0] === 'users' &&
-            pathSegments[2] === 'mentorChats' &&
-            pathSegments[4] === 'messages';
+        for (const userDoc of usersSnapshot.docs) {
+          const uid = userDoc.id;
+          const chatsSnapshot = await getDocs(collection(firestore, 'users', uid, 'mentorChats'));
 
-          if (!isMentorChatMessagePath) {
-            continue;
+          for (const chatDoc of chatsSnapshot.docs) {
+            const chatId = chatDoc.id;
+            const messagesRef = collection(firestore, 'users', uid, 'mentorChats', chatId, 'messages');
+            const messagesQuery = query(messagesRef, orderBy('sentAt', 'asc'));
+            const messagesSnapshot = await getDocs(messagesQuery);
+
+            for (const messageDoc of messagesSnapshot.docs) {
+              const data = messageDoc.data() as {
+                role?: 'user' | 'model';
+                text?: string;
+                sentAt?: unknown;
+              };
+
+              loadedMessages.push({
+                id: messageDoc.id,
+                uid,
+                chatId,
+                role: data.role === 'model' ? 'model' : 'user',
+                text: data.text ?? '',
+                sentAt: toIsoStringIfPossible(data.sentAt),
+              });
+            }
           }
-
-          const uid = pathSegments[1];
-          const chatId = pathSegments[3];
-          const data = messageDoc.data() as {
-            role?: 'user' | 'model';
-            text?: string;
-            sentAt?: unknown;
-          };
-
-          loadedMessages.push({
-            id: messageDoc.id,
-            uid,
-            chatId,
-            role: data.role === 'model' ? 'model' : 'user',
-            text: data.text ?? '',
-            sentAt: toIsoStringIfPossible(data.sentAt),
-          });
         }
 
-        setMessages(loadedMessages);
+        setMessages(dedupeAdminMessages(loadedMessages));
       } catch (e) {
         console.error(e);
         setError('Failed to load admin chats.');
