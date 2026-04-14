@@ -58,7 +58,7 @@ type DisplayMessage = {
   relatedResources?: {
     title: string;
     url: string;
-  }[];
+    }[];
 };
 
 const negativeFeedbackOptions = [
@@ -67,6 +67,15 @@ const negativeFeedbackOptions = [
   'Slow or buggy',
   'Style or tone',
   'Safety or legal concern',
+  'Other',
+] as const;
+
+const positiveFeedbackOptions = [
+  'Helpful and accurate',
+  'Clear and easy to follow',
+  'Encouraging tone',
+  'Useful resources',
+  'Good follow-up ideas',
   'Other',
 ] as const;
 
@@ -127,8 +136,9 @@ export function ChatInterface() {
   const [isLoading, setIsLoading] = useState(true);
   const [feedbackMessageIds, setFeedbackMessageIds] = useState<string[]>([]);
   const [feedbackDialogMessageId, setFeedbackDialogMessageId] = useState<string | null>(null);
-  const [negativeFeedbackReason, setNegativeFeedbackReason] = useState<string>('');
-  const [negativeFeedbackDetails, setNegativeFeedbackDetails] = useState('');
+  const [feedbackDialogType, setFeedbackDialogType] = useState<'up' | 'down' | null>(null);
+  const [feedbackReason, setFeedbackReason] = useState<string>('');
+  const [feedbackDetails, setFeedbackDetails] = useState('');
   const isSendingRef = useRef(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const {toast} = useToast();
@@ -495,14 +505,23 @@ export function ChatInterface() {
     }
 
     setFeedbackDialogMessageId(null);
-    setNegativeFeedbackReason('');
-    setNegativeFeedbackDetails('');
+    setFeedbackDialogType(null);
+    setFeedbackReason('');
+    setFeedbackDetails('');
   };
 
   const openNegativeFeedbackDialog = (message: DisplayMessage) => {
     setFeedbackDialogMessageId(message.id ?? null);
-    setNegativeFeedbackReason(message.feedbackReason ?? '');
-    setNegativeFeedbackDetails(message.feedbackDetails ?? '');
+    setFeedbackDialogType('down');
+    setFeedbackReason(message.feedbackReason ?? '');
+    setFeedbackDetails(message.feedbackDetails ?? '');
+  };
+
+  const openPositiveFeedbackDialog = (message: DisplayMessage) => {
+    setFeedbackDialogMessageId(message.id ?? null);
+    setFeedbackDialogType('up');
+    setFeedbackReason(message.feedbackReason ?? '');
+    setFeedbackDetails(message.feedbackDetails ?? '');
   };
 
   const handleMessageFeedback = async (
@@ -602,12 +621,12 @@ export function ChatInterface() {
     }
   };
 
-  const submitNegativeFeedback = async () => {
-    if (!feedbackDialogMessageId) return;
+  const submitFeedback = async () => {
+    if (!feedbackDialogMessageId || !feedbackDialogType) return;
 
-    await handleMessageFeedback(feedbackDialogMessageId, 'down', {
-      reason: negativeFeedbackReason || null,
-      details: negativeFeedbackDetails.trim() || null,
+    await handleMessageFeedback(feedbackDialogMessageId, feedbackDialogType, {
+      reason: feedbackReason || null,
+      details: feedbackDetails.trim() || null,
     });
     handleFeedbackDialogOpenChange(false);
   };
@@ -684,7 +703,7 @@ export function ChatInterface() {
                         size="sm"
                         disabled={feedbackMessageIds.includes(msg.id)}
                         aria-label="Thumbs up"
-                        onClick={() => handleMessageFeedback(msg.id!, 'up')}>
+                        onClick={() => openPositiveFeedbackDialog(msg)}>
                         <ThumbsUp className="h-4 w-4" />
                       </Button>
                       <Button
@@ -779,28 +798,32 @@ export function ChatInterface() {
       </Card>
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle>Share feedback</DialogTitle>
+          <DialogTitle>
+            {feedbackDialogType === 'up' ? 'Share positive feedback' : 'Share feedback'}
+          </DialogTitle>
           <DialogDescription>
-            Tell us what went wrong with this AI response.
+            {feedbackDialogType === 'up'
+              ? 'Tell us what worked well with this AI response.'
+              : 'Tell us what went wrong with this AI response.'}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
           <div className="flex flex-wrap gap-2">
-            {negativeFeedbackOptions.map((option) => (
+            {(feedbackDialogType === 'up' ? positiveFeedbackOptions : negativeFeedbackOptions).map((option) => (
               <Button
                 key={option}
                 type="button"
-                variant={negativeFeedbackReason === option ? 'default' : 'outline'}
+                variant={feedbackReason === option ? 'default' : 'outline'}
                 className="rounded-full"
-                onClick={() => setNegativeFeedbackReason(option)}>
+                onClick={() => setFeedbackReason(option)}>
                 {option}
               </Button>
             ))}
           </div>
           <Textarea
             placeholder="Share details (optional)"
-            value={negativeFeedbackDetails}
-            onChange={(e) => setNegativeFeedbackDetails(e.target.value)}
+            value={feedbackDetails}
+            onChange={(e) => setFeedbackDetails(e.target.value)}
             rows={4}
           />
           <div className="rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground">
@@ -819,9 +842,9 @@ export function ChatInterface() {
             disabled={
               !feedbackDialogMessageId ||
               feedbackMessageIds.includes(feedbackDialogMessageId) ||
-              (!negativeFeedbackReason && !negativeFeedbackDetails.trim())
+              (!feedbackReason && !feedbackDetails.trim())
             }
-            onClick={submitNegativeFeedback}>
+            onClick={submitFeedback}>
             Submit
           </Button>
         </DialogFooter>
