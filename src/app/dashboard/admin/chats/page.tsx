@@ -6,12 +6,25 @@ import {
   dedupeMessagesByRoleAndText,
   formatDateShort,
   formatTimeShort,
-  getConversationIndexId,
   toIsoStringIfPossible,
 } from '@/lib/chat-message-utils';
-import { collection, doc, getDoc, getDocs, orderBy, query, setDoc } from 'firebase/firestore';
+import {
+  collection,
+  doc,
+  DocumentData,
+  getCountFromServer,
+  getDoc,
+  getDocs,
+  limit,
+  orderBy,
+  query,
+  QueryDocumentSnapshot,
+  startAfter,
+} from 'firebase/firestore';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+
+const PAGE_SIZE = 50;
 
 type ConversationSummary = {
   id: string;
@@ -64,11 +77,66 @@ export default function AdminChatsPage() {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [messages, setMessages] = useState<AdminMessage[]>([]);
   const [selectedConversationKey, setSelectedConversationKey] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageCursors, setPageCursors] = useState<Array<QueryDocumentSnapshot<DocumentData> | null>>([]);
+  const [totalMessageCount, setTotalMessageCount] = useState(0);
 
   const selectedConversation = useMemo(
     () => conversations.find((conversation) => conversation.id === selectedConversationKey) ?? null,
     [conversations, selectedConversationKey]
   );
+  const totalPages = useMemo(() => {
+    const messageCount = totalMessageCount || selectedConversation?.messageCount || 0;
+    return Math.max(1, Math.ceil(messageCount / PAGE_SIZE));
+  }, [selectedConversation, totalMessageCount]);
+
+  async function withAccurateMessageCounts(conversationList: ConversationSummary[]): Promise<ConversationSummary[]> {
+    return Promise.all(
+      conversationList.map(async (conversation) => {
+        try {
+          const messagesCollection = collection(
+            firestore,
+            'users',
+            conversation.uid,
+            'mentorChats',
+            conversation.chatId,
+            'messages'
+          );
+          const snapshot = await getCountFromServer(messagesCollection);
+
+          return {
+            ...conversation,
+            messageCount: snapshot.data().count,
+          };
+        } catch (error) {
+          console.error(error);
+          return conversation;
+        }
+      })
+    );
+  }
+
+  function mapAdminMessages(
+    conversation: ConversationSummary,
+    docs: QueryDocumentSnapshot<DocumentData>[]
+  ): AdminMessage[] {
+    return docs.map((messageDoc) => {
+      const data = messageDoc.data() as {
+        role?: 'user' | 'model';
+        text?: string;
+        sentAt?: unknown;
+      };
+
+      return {
+        id: messageDoc.id,
+        uid: conversation.uid,
+        chatId: conversation.chatId,
+        role: data.role === 'model' ? 'model' : 'user',
+        text: data.text ?? '',
+        sentAt: toIsoStringIfPossible(data.sentAt),
+      };
+    });
+  }
 
   async function loadConversationIndex(): Promise<ConversationSummary[]> {
     const indexQuery = query(collection(firestore, 'conversationIndex'), orderBy('updatedAt', 'desc'));
@@ -101,79 +169,6 @@ export default function AdminChatsPage() {
     });
   }
 
-  async function backfillConversationIndexFromMentorChats() {
-    const usersSnapshot = await getDocs(collection(firestore, 'users'));
-
-    for (const userDoc of usersSnapshot.docs) {
-      const uid = userDoc.id;
-      const userData = userDoc.data() as {displayName?: string; email?: string;};
-      const chatsSnapshot = await getDocs(collection(firestore, 'users', uid, 'mentorChats'));
-
-      for (const chatDoc of chatsSnapshot.docs) {
-        const chatId = chatDoc.id;
-        const chatData = chatDoc.data() as {
-          title?: string;
-          messageCount?: number;
-          lastMessagePreview?: string;
-          createdAt?: unknown;
-          updatedAt?: unknown;
-        };
-
-        await setDoc(
-          doc(firestore, 'conversationIndex', getConversationIndexId(uid, chatId)),
-          {
-            uid,
-            displayName: userData.displayName ?? null,
-            email: userData.email ?? null,
-            chatId,
-            title: chatData.title ?? 'AI Mentor Chat',
-            messageCount: typeof chatData.messageCount === 'number' ? chatData.messageCount : 0,
-            lastMessagePreview: chatData.lastMessagePreview ?? '',
-            latestAt: chatData.updatedAt ?? chatData.createdAt ?? new Date(),
-            updatedAt: chatData.updatedAt ?? new Date(),
-            createdAt: chatData.createdAt ?? new Date(),
-          },
-          { merge: true }
-        );
-      }
-    }
-  }
-
-  async function hydrateMissingIdentityFields(conversationList: ConversationSummary[]) {
-    const missing = conversationList.filter((conversation) => !conversation.displayName || !conversation.email);
-    const uniqueUids = Array.from(new Set(missing.map((conversation) => conversation.uid).filter(Boolean)));
-    if (uniqueUids.length === 0) return;
-
-    const userProfileByUid = new Map<string, {displayName?: string | null; email?: string | null;}>();
-    await Promise.all(
-      uniqueUids.map(async (uid) => {
-        const userSnapshot = await getDoc(doc(firestore, 'users', uid));
-        if (!userSnapshot.exists()) return;
-        const userData = userSnapshot.data() as {displayName?: string; email?: string;};
-        userProfileByUid.set(uid, {
-          displayName: userData.displayName ?? null,
-          email: userData.email ?? null,
-        });
-      })
-    );
-
-    await Promise.all(
-      missing.map(async (conversation) => {
-        const profile = userProfileByUid.get(conversation.uid);
-        if (!profile) return;
-        await setDoc(
-          doc(firestore, 'conversationIndex', conversation.id),
-          {
-            displayName: profile.displayName ?? null,
-            email: profile.email ?? null,
-            updatedAt: new Date(),
-          },
-          { merge: true }
-        );
-      })
-    );
-  }
-
   useEffect(() => {
     async function checkAndLoadConversations() {
       if (!user) {
@@ -195,17 +190,8 @@ export default function AdminChatsPage() {
           return;
         }
 
-        let loadedConversations = await loadConversationIndex();
-
-        if (loadedConversations.length === 0) {
-          await backfillConversationIndexFromMentorChats();
-          loadedConversations = await loadConversationIndex();
-        }
-
-        await hydrateMissingIdentityFields(loadedConversations);
-        loadedConversations = await loadConversationIndex();
-
-        setConversations(loadedConversations);
+        const loadedConversations = await loadConversationIndex();
+        setConversations(await withAccurateMessageCounts(loadedConversations));
       } catch (e) {
         console.error(e);
         setError('Failed to load admin chats.');
@@ -224,47 +210,131 @@ export default function AdminChatsPage() {
   }, [conversations, selectedConversationKey]);
 
   useEffect(() => {
-    async function loadSelectedConversationMessages() {
+    async function loadSelectedConversationCount() {
       if (!selectedConversation || !isAdmin) {
-        setMessages([]);
+        setTotalMessageCount(0);
         return;
       }
 
       try {
-        setIsLoadingMessages(true);
-        const messagesQuery = query(
-          collection(firestore, 'users', selectedConversation.uid, 'mentorChats', selectedConversation.chatId, 'messages'),
-          orderBy('sentAt', 'asc')
+        const messagesCollection = collection(
+          firestore,
+          'users',
+          selectedConversation.uid,
+          'mentorChats',
+          selectedConversation.chatId,
+          'messages'
         );
-        const messagesSnapshot = await getDocs(messagesQuery);
-        const loadedMessages: AdminMessage[] = messagesSnapshot.docs.map((messageDoc) => {
-          const data = messageDoc.data() as {
-            role?: 'user' | 'model';
-            text?: string;
-            sentAt?: unknown;
-          };
-
-          return {
-            id: messageDoc.id,
-            uid: selectedConversation.uid,
-            chatId: selectedConversation.chatId,
-            role: data.role === 'model' ? 'model' : 'user',
-            text: data.text ?? '',
-            sentAt: toIsoStringIfPossible(data.sentAt),
-          };
-        });
-
-        setMessages(dedupeAdminMessages(loadedMessages));
+        const snapshot = await getCountFromServer(messagesCollection);
+        setTotalMessageCount(snapshot.data().count);
       } catch (e) {
         console.error(e);
-        setError('Failed to load messages for selected conversation.');
-      } finally {
-        setIsLoadingMessages(false);
+        setTotalMessageCount(selectedConversation.messageCount ?? 0);
       }
     }
 
-    loadSelectedConversationMessages();
+    loadSelectedConversationCount();
   }, [firestore, selectedConversation, isAdmin]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+    setPageCursors([]);
+    setTotalMessageCount(selectedConversation?.messageCount ?? 0);
+  }, [selectedConversation?.id]);
+
+  const loadConversationPage = async (conversation: ConversationSummary, pageNumber: number) => {
+    if (!isAdmin) {
+      return;
+    }
+
+    try {
+      setIsLoadingMessages(true);
+
+      let workingCursors = [...pageCursors];
+      let startCursor: QueryDocumentSnapshot<DocumentData> | null = null;
+
+      if (pageNumber > 1) {
+        if (workingCursors.length >= pageNumber - 1) {
+          startCursor = workingCursors[pageNumber - 2] ?? null;
+        } else {
+          startCursor = workingCursors[workingCursors.length - 1] ?? null;
+          const firstMissingPage = Math.max(1, workingCursors.length + 1);
+
+          for (let page = firstMissingPage; page < pageNumber; page += 1) {
+            const cursorQuery = startCursor
+              ? query(
+                  collection(firestore, 'users', conversation.uid, 'mentorChats', conversation.chatId, 'messages'),
+                  orderBy('sentAt', 'asc'),
+                  startAfter(startCursor),
+                  limit(PAGE_SIZE)
+                )
+              : query(
+                  collection(firestore, 'users', conversation.uid, 'mentorChats', conversation.chatId, 'messages'),
+                  orderBy('sentAt', 'asc'),
+                  limit(PAGE_SIZE)
+                );
+
+            const cursorSnapshot = await getDocs(cursorQuery);
+            const lastDoc = cursorSnapshot.docs[cursorSnapshot.docs.length - 1] ?? null;
+            workingCursors[page - 1] = lastDoc;
+            startCursor = lastDoc;
+
+            if (!lastDoc) {
+              break;
+            }
+          }
+        }
+      }
+
+      const pageQuery = startCursor
+        ? query(
+            collection(firestore, 'users', conversation.uid, 'mentorChats', conversation.chatId, 'messages'),
+            orderBy('sentAt', 'asc'),
+            startAfter(startCursor),
+            limit(PAGE_SIZE)
+          )
+        : query(
+            collection(firestore, 'users', conversation.uid, 'mentorChats', conversation.chatId, 'messages'),
+            orderBy('sentAt', 'asc'),
+            limit(PAGE_SIZE)
+          );
+
+      const pageSnapshot = await getDocs(pageQuery);
+      const loadedMessages = mapAdminMessages(conversation, pageSnapshot.docs);
+      const lastDoc = pageSnapshot.docs[pageSnapshot.docs.length - 1] ?? null;
+      workingCursors[pageNumber - 1] = lastDoc;
+
+      setMessages(dedupeAdminMessages(loadedMessages));
+      setPageCursors(workingCursors);
+      setCurrentPage(pageNumber);
+    } catch (e) {
+      console.error(e);
+      setError('Failed to load messages for selected conversation.');
+    } finally {
+      setIsLoadingMessages(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!selectedConversation || !isAdmin) {
+      setMessages([]);
+      setPageCursors([]);
+      return;
+    }
+
+    loadConversationPage(selectedConversation, 1);
+  }, [firestore, selectedConversation, isAdmin]);
+
+  const visiblePages = useMemo(() => {
+    if (totalPages <= 7) {
+      return Array.from({ length: totalPages }, (_, index) => index + 1);
+    }
+
+    const pages = new Set<number>([1, 2, totalPages - 1, totalPages, currentPage - 1, currentPage, currentPage + 1]);
+    return Array.from(pages)
+      .filter((page) => page >= 1 && page <= totalPages)
+      .sort((a, b) => a - b);
+  }, [currentPage, totalPages]);
 
   if (isUserLoading || isCheckingAdmin) {
     return <div className="p-6">Loading admin access...</div>;
@@ -306,7 +376,7 @@ export default function AdminChatsPage() {
                     </p>
                     <p className="text-xs opacity-80">UID: {conversation.uid}</p>
                     <p className="text-xs opacity-80">Chat: {conversation.chatId}</p>
-                    <p className="text-xs opacity-80">Count: {conversation.messageCount ?? 0}</p>
+                    <p className="text-xs opacity-80">Length: {conversation.messageCount ?? 0}</p>
                     <p className="text-xs opacity-80">
                       Last: {formatDate(conversation.latestAt)} {formatTime(conversation.latestAt)}
                     </p>
@@ -353,6 +423,29 @@ export default function AdminChatsPage() {
                   </div>
                 </div>
               ))}
+              {selectedConversation && totalPages > 1 && !isLoadingMessages && (
+                <div className="flex flex-wrap items-center justify-center gap-2 border-t pt-4">
+                  {visiblePages.map((page, index) => {
+                    const previousPage = visiblePages[index - 1];
+                    const showGap = previousPage && page - previousPage > 1;
+
+                    return (
+                      <div key={page} className="flex items-center gap-2">
+                        {showGap && <span className="text-sm text-muted-foreground">...</span>}
+                        <Button
+                          type="button"
+                          variant={page === currentPage ? 'default' : 'outline'}
+                          size="sm"
+                          disabled={isLoadingMessages}
+                          onClick={() => loadConversationPage(selectedConversation, page)}
+                        >
+                          {page}
+                        </Button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>

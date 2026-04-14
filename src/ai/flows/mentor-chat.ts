@@ -1,7 +1,7 @@
 'use server';
 
 import {ai} from '@/ai/genkit';
-import {z} from 'zod';
+import {z} from 'genkit';
 import {resources} from '@/lib/resources';
 
 declare global {
@@ -88,29 +88,56 @@ if (!globalThis.__empoweru_find_resources_tool) {
   globalThis.__empoweru_find_resources_tool = findResources;
 }
 
-function isSchemaValidationError(error: unknown): boolean {
-  if (!error || typeof error !== 'object') {
-    return false;
+function extractJsonObject(text: string): string | null {
+  const trimmed = text.trim();
+  const unfenced = trimmed
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/, '')
+    .trim();
+  const start = unfenced.indexOf('{');
+  const end = unfenced.lastIndexOf('}');
+
+  if (start === -1 || end === -1 || end <= start) {
+    return null;
   }
 
-  const maybe = error as {
-    status?: unknown;
-    code?: unknown;
-    message?: unknown;
-    originalMessage?: unknown;
-  };
-  const hasSchemaMessage =
-    (typeof maybe.message === 'string' &&
-      maybe.message.includes('Schema validation failed')) ||
-    (typeof maybe.originalMessage === 'string' &&
-      maybe.originalMessage.includes('Schema validation failed'));
+  return unfenced.slice(start, end + 1);
+}
 
-  const isInvalidArgument =
-    maybe.status === 'INVALID_ARGUMENT' ||
-    maybe.code === 400 ||
-    (typeof maybe.message === 'string' && maybe.message.includes('INVALID_ARGUMENT'));
+function parseMentorChatOutput(text: string): MentorChatOutput | null {
+  const jsonText = extractJsonObject(text);
+  if (!jsonText) {
+    return null;
+  }
 
-  return isInvalidArgument && hasSchemaMessage;
+  try {
+    const parsed = JSON.parse(jsonText);
+    const result = MentorChatOutputSchema.safeParse(parsed);
+    return result.success ? result.data : null;
+  } catch {
+    return null;
+  }
+}
+
+async function generateMentorChatResponse(params: {
+  history: MentorChatInput['history'];
+  message: string;
+  promptText: string;
+  temperature: number;
+}): Promise<MentorChatOutput | null> {
+  const response = await ai.generate({
+    tools: [findResources],
+    messages: [
+      {role: 'system' as const, content: [{text: params.promptText}]},
+      ...params.history,
+      {role: 'user' as const, content: [{text: params.message}]},
+    ],
+    config: {
+      temperature: params.temperature,
+    },
+  });
+
+  return parseMentorChatOutput(response.text ?? '');
 }
 
 const prompt = `
@@ -160,80 +187,43 @@ const mentorChatFlow =
       outputSchema: MentorChatOutputSchema,
     },
     async ({history, message}) => {
-    try {
-      const baseMessages = [
-        {role: 'system' as const, content: [{text: prompt}]},
-        ...history,
-        {role: 'user' as const, content: [{text: message}]},
-      ];
-
-      let response;
       try {
-        response = await ai.generate({
-          tools: [findResources],
-          messages: baseMessages,
-          output: {schema: MentorChatOutputSchema},
-          config: {
-            temperature: 0.3,
-          },
+        const firstAttempt = await generateMentorChatResponse({
+          history,
+          message,
+          promptText: prompt,
+          temperature: 0.3,
         });
-      } catch (error) {
-        if (!isSchemaValidationError(error)) {
-          throw error;
+        if (firstAttempt) {
+          return firstAttempt;
         }
 
         console.warn(
-          'mentorChat: first structured attempt returned null; retrying once with stricter instructions.'
+          'mentorChat: initial JSON parsing failed; retrying once with stricter instructions.'
         );
 
-        const retryMessages = [
-          {
-            role: 'system' as const,
-            content: [
-              {
-                text:
-                  `${prompt}\n\nCritical retry instruction: Return only a valid JSON object matching the schema. Do not return null.`,
-              },
-            ],
-          },
-          ...history,
-          {role: 'user' as const, content: [{text: message}]},
-        ];
-
-        response = await ai.generate({
-          messages: retryMessages,
-          output: {schema: MentorChatOutputSchema},
-          config: {
-            temperature: 0,
-          },
+        const retryAttempt = await generateMentorChatResponse({
+          history,
+          message,
+          promptText:
+            `${prompt}\n\nCritical retry instruction: Return only a valid JSON object matching the schema. Do not return null.`,
+          temperature: 0,
         });
-      }
+        if (retryAttempt) {
+          return retryAttempt;
+        }
 
-      const output = response.output;
-      if (!output) {
-        console.error('No valid structured output from model');
-        return {
-          answer:
-            "I'm sorry, I'm having trouble connecting right now. Please try again in a moment.",
-          followUpQuestions: [],
-          relatedResources: [],
-        };
-      }
-
-      return output;
-    } catch (error) {
-      if (isSchemaValidationError(error)) {
-        console.warn('mentorChat: model returned invalid structured output (null).');
-      } else {
+        console.warn('mentorChat: retry did not yield valid JSON output.');
+      } catch (error) {
         console.error('mentorChat generate error:', error);
       }
+
       return {
         answer:
           "I'm sorry, I'm having trouble connecting right now. Please try again in a moment.",
         followUpQuestions: [],
         relatedResources: [],
       };
-    }
     }
   );
 
