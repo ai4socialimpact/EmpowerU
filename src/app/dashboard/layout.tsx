@@ -17,6 +17,7 @@ import {
   GraduationCap,
   LogIn,
   Shield,
+  Flag,
 } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
@@ -137,18 +138,32 @@ export default function DashboardLayout({
               </SidebarMenuButton>
             </SidebarMenuItem>
             {!isAdminLoading && isAdmin && (
-              <SidebarMenuItem>
-                <SidebarMenuButton
-                  asChild
-                  isActive={pathname.startsWith('/dashboard/admin')}
-                  tooltip="Admin Chats"
-                >
-                  <Link href="/dashboard/admin/chats">
-                    <Shield />
-                    <span className="group-data-[collapsible=icon]:hidden">Admin Chats</span>
-                  </Link>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
+              <>
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    asChild
+                    isActive={pathname === '/dashboard/admin/chats'}
+                    tooltip="Admin Chats"
+                  >
+                    <Link href="/dashboard/admin/chats">
+                      <Shield />
+                      <span className="group-data-[collapsible=icon]:hidden">Admin Chats</span>
+                    </Link>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    asChild
+                    isActive={pathname === '/dashboard/admin/feedback'}
+                    tooltip="Admin Feedback"
+                  >
+                    <Link href="/dashboard/admin/feedback">
+                      <Flag />
+                      <span className="group-data-[collapsible=icon]:hidden">Admin Feedback</span>
+                    </Link>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              </>
             )}
           </SidebarMenu>
         </SidebarContent>

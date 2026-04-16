@@ -23,14 +23,22 @@ export function UserNav() {
 
   if (!user || user.isAnonymous) return null;
   
-  const handleLogout = () => {
-    if (auth) {
-      signOut(auth).then(() => {
-        // After sign out, sign in anonymously to maintain a session
-        signInAnonymously(auth).catch((error) => {
-          console.error("Anonymous sign-in failed after logout:", error);
-        }).finally(()=> router.push('/dashboard'));
-      });
+  const handleLogout = async () => {
+    if (!auth) {
+      router.replace('/dashboard');
+      router.refresh();
+      return;
+    }
+
+    try {
+      await signOut(auth);
+      // After sign out, sign in anonymously to maintain a session.
+      await signInAnonymously(auth);
+    } catch (error) {
+      console.error('Logout flow failed:', error);
+    } finally {
+      router.replace('/dashboard');
+      router.refresh();
     }
   };
 

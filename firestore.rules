@@ -150,6 +150,22 @@ service cloud.firestore {
     }
 
     /**
+     * @description Lightweight feedback listing index for admin dashboards.
+     * @path /feedbackIndex/{feedbackId}
+     */
+    match /feedbackIndex/{feedbackId} {
+      allow get: if isAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid);
+      allow list: if isAdmin();
+      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
+      allow update: if isAdmin() || (
+        isSignedIn() &&
+        resource.data.uid == request.auth.uid &&
+        request.resource.data.uid == request.auth.uid
+      );
+      allow delete: if false;
+    }
+
+    /**
      * @description Allows public read access to learning resources.
      * @path /resources/{resourceId}
      * @allow (get, list) Public read access to all resources.

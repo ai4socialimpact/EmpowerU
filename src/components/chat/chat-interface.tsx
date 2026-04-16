@@ -29,6 +29,7 @@ import {
   dedupeMessagesByRoleAndText,
   formatDateShort,
   formatTimeShort,
+  getFeedbackIndexId,
   getConversationIndexId,
   toIsoStringIfPossible,
 } from '@/lib/chat-message-utils';
@@ -52,8 +53,10 @@ type DisplayMessage = {
   text: string;
   sentAt?: string;
   feedback?: 'up' | 'down' | null;
+  hasFeedback?: boolean;
   feedbackReason?: string | null;
   feedbackDetails?: string | null;
+  feedbackUpdatedAt?: string | null;
   followUpQuestions?: string[];
   relatedResources?: {
     title: string;
@@ -78,6 +81,20 @@ const positiveFeedbackOptions = [
   'Good follow-up ideas',
   'Other',
 ] as const;
+
+const feedbackReasonCodeMap: Record<string, string> = {
+  'Incorrect or incomplete': 'incorrect_or_incomplete',
+  'Not what I asked for': 'not_relevant',
+  'Slow or buggy': 'slow_or_buggy',
+  'Style or tone': 'style_or_tone',
+  'Safety or legal concern': 'safety_or_legal_concern',
+  Other: 'other',
+  'Helpful and accurate': 'helpful_and_accurate',
+  'Clear and easy to follow': 'clear_and_easy_to_follow',
+  'Encouraging tone': 'encouraging_tone',
+  'Useful resources': 'useful_resources',
+  'Good follow-up ideas': 'good_follow_up_ideas',
+};
 
 function dedupeStoredMessages(messages: DisplayMessage[]): DisplayMessage[] {
   return dedupeMessagesByRoleAndText(messages);
@@ -126,6 +143,14 @@ async function stableMessageId(seed: string): Promise<string> {
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
   return `m_${hex.slice(0, 40)}`;
+}
+
+function getFeedbackReasonCode(reason?: string | null): string | null {
+  if (!reason) {
+    return null;
+  }
+
+  return feedbackReasonCodeMap[reason] ?? 'other';
 }
 
 export function ChatInterface() {
@@ -225,8 +250,10 @@ export function ChatInterface() {
               text: data.text,
               sentAt: toIsoStringIfPossible(data.sentAt),
               feedback: data.feedback ?? null,
+              hasFeedback: data.hasFeedback ?? Boolean(data.feedback),
               feedbackReason: data.feedbackReason ?? null,
               feedbackDetails: data.feedbackDetails ?? null,
+              feedbackUpdatedAt: toIsoStringIfPossible(data.feedbackUpdatedAt),
               followUpQuestions: data.followUpQuestions,
               relatedResources: data.relatedResources,
             };
@@ -258,8 +285,11 @@ export function ChatInterface() {
                 text: message.text,
                 sentAt,
                 feedback: message.feedback ?? null,
+                hasFeedback: message.hasFeedback ?? Boolean(message.feedback),
                 feedbackReason: message.feedbackReason ?? null,
                 feedbackDetails: message.feedbackDetails ?? null,
+                feedbackUpdatedAt:
+                  toIsoStringIfPossible(message.feedbackUpdatedAt) ?? null,
                 followUpQuestions: message.followUpQuestions ?? [],
                 relatedResources: message.relatedResources ?? [],
               };
@@ -319,8 +349,10 @@ export function ChatInterface() {
           text: response,
           sentAt: new Date().toISOString(),
           feedback: null,
+          hasFeedback: false,
           feedbackReason: null,
           feedbackDetails: null,
+          feedbackUpdatedAt: null,
           followUpQuestions: [] as string[],
           relatedResources: [] as {title: string; url: string;}[],
         };
@@ -389,8 +421,10 @@ export function ChatInterface() {
       text: textToSend,
       sentAt: new Date().toISOString(),
       feedback: null,
+      hasFeedback: false,
       feedbackReason: null,
       feedbackDetails: null,
+      feedbackUpdatedAt: null,
       followUpQuestions: [],
       relatedResources: [],
     };
@@ -412,8 +446,10 @@ export function ChatInterface() {
         text: userMessage.text,
         sentAt: new Date(userMessage.sentAt ?? new Date().toISOString()),
         feedback: null,
+        hasFeedback: false,
         feedbackReason: null,
         feedbackDetails: null,
+        feedbackUpdatedAt: null,
         followUpQuestions: [],
         relatedResources: [],
       });
@@ -425,13 +461,26 @@ export function ChatInterface() {
       const messagesAfterUserWrite = [...messages, userMessageWithId];
       setMessages(messagesAfterUserWrite);
 
-      const history: MentorChatInput['history'] = messages.map(msg => ({
+      const fullHistorySnapshot = await getDocs(
+        query(messagesColRef, orderBy('sentAt', 'asc'))
+      );
+      const history: MentorChatInput['history'] = fullHistorySnapshot.docs
+        .filter(messageDoc => messageDoc.id !== userMessageId)
+        .map(messageDoc => {
+          const data = messageDoc.data() as Omit<DisplayMessage, 'id'>;
+          return {
+            role: data.role,
+            content: [{text: data.text}],
+          };
+        });
+
+      const fallbackHistory: MentorChatInput['history'] = messages.map(msg => ({
         role: msg.role,
         content: [{text: msg.text}],
       }));
 
       const response = await mentorChat({
-        history: history,
+        history: history.length > 0 ? history : fallbackHistory,
         message: textToSend,
       });
 
@@ -440,8 +489,10 @@ export function ChatInterface() {
         text: response.answer,
         sentAt: new Date().toISOString(),
         feedback: null,
+        hasFeedback: false,
         feedbackReason: null,
         feedbackDetails: null,
+        feedbackUpdatedAt: null,
         followUpQuestions: response.followUpQuestions,
         relatedResources: response.relatedResources,
       };
@@ -452,8 +503,10 @@ export function ChatInterface() {
         text: modelMessage.text,
         sentAt: new Date(modelMessage.sentAt ?? new Date().toISOString()),
         feedback: null,
+        hasFeedback: false,
         feedbackReason: null,
         feedbackDetails: null,
+        feedbackUpdatedAt: null,
         followUpQuestions: modelMessage.followUpQuestions ?? [],
         relatedResources: modelMessage.relatedResources ?? [],
       });
@@ -544,7 +597,12 @@ export function ChatInterface() {
     try {
       const messageRef = doc(firestore, 'users', user.uid, 'mentorChats', chatId, 'messages', messageId);
       const chatDocRef = doc(firestore, 'users', user.uid, 'mentorChats', chatId);
-      const feedbackDocRef = doc(firestore, 'chatFeedback', getConversationIndexId(user.uid, `${chatId}_${messageId}`));
+      const feedbackId = getFeedbackIndexId(user.uid, chatId, messageId);
+      const feedbackDocRef = doc(firestore, 'chatFeedback', feedbackId);
+      const feedbackIndexDocRef = doc(firestore, 'feedbackIndex', feedbackId);
+      const reasonCode = getFeedbackReasonCode(options?.reason ?? null);
+      const isFirstFeedbackSubmission = !currentMessage.hasFeedback;
+
       await setDoc(
         messageRef,
         {
@@ -562,8 +620,10 @@ export function ChatInterface() {
           ? {
               ...message,
               feedback,
+              hasFeedback: true,
               feedbackReason: options?.reason ?? null,
               feedbackDetails: options?.details ?? null,
+              feedbackUpdatedAt: new Date().toISOString(),
             }
           : message
       );
@@ -599,13 +659,52 @@ export function ChatInterface() {
           chatId,
           messageId,
           feedback,
-          reason: options?.reason ?? null,
+          reasonCode,
+          reasonLabel: options?.reason ?? null,
           details: options?.details ?? null,
-          active: feedback === 'down',
+          active: true,
           displayName: user.displayName ?? null,
           email: user.email ?? null,
+          messageRole: currentMessage.role,
           messageTextPreview: truncatePreview(currentMessage.text, 240),
-          createdAt: serverTimestamp(),
+          messageTextFull: currentMessage.text,
+          followUpQuestions: currentMessage.followUpQuestions ?? [],
+          relatedResources: currentMessage.relatedResources ?? [],
+          flowName: 'mentorChatFlow',
+          modelName: 'googleai/gemini-2.5-flash',
+          status: feedback === 'down' ? 'open' : 'closed',
+          conversationIndexId: getConversationIndexId(user.uid, chatId),
+          ...(isFirstFeedbackSubmission
+            ? {
+                createdAt: serverTimestamp(),
+              }
+            : {}),
+          updatedAt: serverTimestamp(),
+        },
+        {merge: true}
+      );
+
+      await setDoc(
+        feedbackIndexDocRef,
+        {
+          uid: user.uid,
+          chatId,
+          messageId,
+          feedback,
+          reasonCode,
+          reasonLabel: options?.reason ?? null,
+          status: feedback === 'down' ? 'open' : 'closed',
+          active: true,
+          displayName: user.displayName ?? null,
+          email: user.email ?? null,
+          messageRole: currentMessage.role,
+          messageTextPreview: truncatePreview(currentMessage.text, 240),
+          conversationIndexId: getConversationIndexId(user.uid, chatId),
+          ...(isFirstFeedbackSubmission
+            ? {
+                createdAt: serverTimestamp(),
+              }
+            : {}),
           updatedAt: serverTimestamp(),
         },
         {merge: true}

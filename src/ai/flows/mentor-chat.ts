@@ -1,16 +1,8 @@
 'use server';
 
 import {ai} from '@/ai/genkit';
-import {z} from 'genkit';
+import {z} from 'zod';
 import {resources} from '@/lib/resources';
-
-declare global {
-  // Reuse flow/tool registrations across hot reloads when ai is singleton.
-  // eslint-disable-next-line no-var
-  var __empoweru_find_resources_tool: unknown;
-  // eslint-disable-next-line no-var
-  var __empoweru_mentor_chat_flow: unknown;
-}
 
 const MessageSchema = z.object({
   role: z.enum(['user', 'model']),
@@ -21,33 +13,71 @@ const MentorChatInputSchema = z.object({
   history: z.array(MessageSchema),
   message: z.string(),
 });
+
 export type MentorChatInput = z.infer<typeof MentorChatInputSchema>;
 
 const MentorChatOutputSchema = z.object({
-  answer: z
-    .string()
-    .describe(
-      "The main answer to the user's question. This should be a clear and concise response."
-    ),
-  followUpQuestions: z
-    .array(z.string())
-    .optional()
-    .describe(
-      'A list of 1-3 relevant follow-up questions to keep the conversation going.'
-    ),
+  answer: z.string(),
+  followUpQuestions: z.array(z.string()).default([]),
   relatedResources: z
     .array(
       z.object({
-        title: z.string().describe('The title of the resource.'),
-        url: z.string().url().describe('The URL of the resource.'),
+        title: z.string(),
+        url: z.string().url(),
       })
     )
-    .optional()
-    .describe(
-      'A list of 1-2 relevant resources to help the user, found using the findResources tool.'
-    ),
+    .default([]),
 });
+
 export type MentorChatOutput = z.infer<typeof MentorChatOutputSchema>;
+
+const findResources = ai.defineTool(
+  {
+    name: 'findResources',
+    description: 'Find relevant resources for the user.',
+    inputSchema: z.object({
+      query: z.string(),
+    }),
+    outputSchema: z.array(
+      z.object({
+        title: z.string(),
+        url: z.string(),
+      })
+    ),
+  },
+  async ({query}) => {
+    const search = query.toLowerCase();
+
+    return resources
+      .filter(resource =>
+        resource.title.toLowerCase().includes(search) ||
+        resource.description.toLowerCase().includes(search) ||
+        resource.category.toLowerCase().includes(search)
+      )
+      .map(resource => ({
+        title: resource.title,
+        url: resource.link,
+      }));
+  }
+);
+
+const prompt = `
+You are EmpowerU, a warm and supportive guidance counselor.
+
+You help students and parents with:
+- schools
+- scholarships
+- career goals
+- academic programs
+
+Rules:
+- Keep answers concise, supportive, and directly relevant.
+- Use the findResources tool when helpful.
+- Do not invent URLs.
+- Any URLs must come only from the tool results.
+- Put links only in relatedResources, not in answer.
+- followUpQuestions should be 1-3 short user-facing topics/questions.
+`;
 
 export async function mentorChat(
   input: MentorChatInput
@@ -55,168 +85,51 @@ export async function mentorChat(
   return mentorChatFlow(input);
 }
 
-const findResources =
-  (globalThis.__empoweru_find_resources_tool as ReturnType<typeof ai.defineTool>) ??
-  ai.defineTool(
-    {
-      name: 'findResources',
-      description: 'Finds relevant resources for the user.',
-      inputSchema: z.object({
-        query: z.string().describe('The search query to find resources.'),
-      }),
-      outputSchema: z.array(
-        z.object({
-          title: z.string(),
-          url: z.string(),
-        })
-      ),
-    },
-    async input => {
-      const search = input.query.toLowerCase();
-      return resources
-        .filter(
-          resource =>
-            resource.title.toLowerCase().includes(search) ||
-            resource.description.toLowerCase().includes(search) ||
-            resource.category.toLowerCase().includes(search)
-        )
-        .map(resource => ({title: resource.title, url: resource.link}));
-    }
-  );
+export const mentorChatFlow = ai.defineFlow(
+  {
+    name: 'mentorChatFlow',
+    inputSchema: MentorChatInputSchema,
+    outputSchema: MentorChatOutputSchema,
+  },
+  async ({history, message}) => {
+    try {
+      const recentHistory = history.slice(-10);
 
-if (!globalThis.__empoweru_find_resources_tool) {
-  globalThis.__empoweru_find_resources_tool = findResources;
-}
+      const messages = [
+        {role: 'system' as const, content: [{text: prompt}]},
+        ...recentHistory,
+        {role: 'user' as const, content: [{text: message}]},
+      ];
 
-function extractJsonObject(text: string): string | null {
-  const trimmed = text.trim();
-  const unfenced = trimmed
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/\s*```$/, '')
-    .trim();
-  const start = unfenced.indexOf('{');
-  const end = unfenced.lastIndexOf('}');
+      const response = await ai.generate({
+        tools: [findResources],
+        messages,
+        output: {
+          schema: MentorChatOutputSchema,
+          constrained: true,
+        },
+        config: {
+          temperature: 0.2,
+        },
+      });
 
-  if (start === -1 || end === -1 || end <= start) {
-    return null;
-  }
-
-  return unfenced.slice(start, end + 1);
-}
-
-function parseMentorChatOutput(text: string): MentorChatOutput | null {
-  const jsonText = extractJsonObject(text);
-  if (!jsonText) {
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(jsonText);
-    const result = MentorChatOutputSchema.safeParse(parsed);
-    return result.success ? result.data : null;
-  } catch {
-    return null;
-  }
-}
-
-async function generateMentorChatResponse(params: {
-  history: MentorChatInput['history'];
-  message: string;
-  promptText: string;
-  temperature: number;
-}): Promise<MentorChatOutput | null> {
-  const response = await ai.generate({
-    tools: [findResources],
-    messages: [
-      {role: 'system' as const, content: [{text: params.promptText}]},
-      ...params.history,
-      {role: 'user' as const, content: [{text: params.message}]},
-    ],
-    config: {
-      temperature: params.temperature,
-    },
-  });
-
-  return parseMentorChatOutput(response.text ?? '');
-}
-
-const prompt = `
-  # Role and Purpose
-  - Your role is to act as a guidance counselor named EmpowerU who helps students and their parents find and apply for schools and scholarships, explore career goals, and understand academic programs.
-  - You are designed to support a broad and diverse audience, with a focus on disadvantaged communities such as single mothers, first-generation college students, and parents returning to education.
-  - Keep the tone warm, respectful, and supportive.
-
-  # Tool Usage
-  - You have access to a 'findResources' tool that can search for relevant articles, websites, and other resources.
-  - You should use this tool whenever the user's question can be answered by providing a link to a resource. For example, if they ask for scholarships, financial aid information, college application guides, etc.
-  - Be proactive in using this tool to provide helpful resources.
-  
-  # URL and Sourcing Rules
-  - When citing a source, you MUST ensure the URL is a complete, direct, and currently live link.
-  - Do NOT generate or fabricate URLs under any circumstances.
-  - You may ONLY use URLs that are returned from the findResources tool. Do not use any other URLs.
-  - You must NOT mention the findResources tool by name in your answer.
-  
-  # Formatting Rules
-  - When creating lists inside the "answer" field, use a dash (-) for each item. Do not use any other markdown for list formatting.
-  - You must output a JSON object with three keys: 'answer' (your primary response), 'followUpQuestions' (an array of 1-3 suggested follow-up questions the user could ask), and 'relatedResources' (a list of 1-2 relevant resources found using the findResources tool).
-  - Follow-up questions should be phrased as topics or questions the USER might want to explore next (e.g., "Scholarships for first-generation students" or "How to apply to community colleges"). Do NOT phrase them as questions you are asking the user.
-  - When you use the findResources tool, you MUST populate the 'relatedResources' field in the output with the results. Do not include the URLs in the 'answer' field.
-
-  # Critical Output Requirements
-  - Your response MUST ONLY be a valid JSON object. Nothing else.
-  - Do NOT include any text, explanations, or commentary before or after the JSON.
-  - Do NOT use markdown formatting.
-  - The response must start with { and end with } with no additional text.
-  - Every response should be pure JSON only.
-  - If you use a tool, incorporate the results into the JSON schema and return ONLY the JSON object.
-  - Never include any narrative, explanation, or text outside the JSON object.
-  - If you cannot provide JSON, still provide JSON with an answer field explaining the issue.
-  
-  # Example Output Format (Your ONLY output should look exactly like this)
-  {"answer":"Your response here","followUpQuestions":["Question 1","Question 2"],"relatedResources":[]}
-  - That's it. Nothing before, nothing after. Start with { and end with }.
-`;
-
-const mentorChatFlow =
-  (globalThis.__empoweru_mentor_chat_flow as ReturnType<typeof ai.defineFlow>) ??
-  ai.defineFlow(
-    {
-      name: 'mentorChatFlow',
-      inputSchema: MentorChatInputSchema,
-      outputSchema: MentorChatOutputSchema,
-    },
-    async ({history, message}) => {
-      try {
-        const firstAttempt = await generateMentorChatResponse({
-          history,
-          message,
-          promptText: prompt,
-          temperature: 0.3,
-        });
-        if (firstAttempt) {
-          return firstAttempt;
-        }
-
-        console.warn(
-          'mentorChat: initial JSON parsing failed; retrying once with stricter instructions.'
-        );
-
-        const retryAttempt = await generateMentorChatResponse({
-          history,
-          message,
-          promptText:
-            `${prompt}\n\nCritical retry instruction: Return only a valid JSON object matching the schema. Do not return null.`,
-          temperature: 0,
-        });
-        if (retryAttempt) {
-          return retryAttempt;
-        }
-
-        console.warn('mentorChat: retry did not yield valid JSON output.');
-      } catch (error) {
-        console.error('mentorChat generate error:', error);
+      if (response.output) {
+        return {
+          answer: response.output.answer,
+          followUpQuestions: response.output.followUpQuestions ?? [],
+          relatedResources: response.output.relatedResources ?? [],
+        };
       }
+
+      return {
+        answer:
+          response.text?.trim() ||
+          "I'm sorry, I'm having trouble connecting right now. Please try again in a moment.",
+        followUpQuestions: [],
+        relatedResources: [],
+      };
+    } catch (error) {
+      console.error('mentorChat error:', error);
 
       return {
         answer:
@@ -225,8 +138,5 @@ const mentorChatFlow =
         relatedResources: [],
       };
     }
-  );
-
-if (!globalThis.__empoweru_mentor_chat_flow) {
-  globalThis.__empoweru_mentor_chat_flow = mentorChatFlow;
-}
+  }
+);

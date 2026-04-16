@@ -8,6 +8,14 @@ export function getConversationIndexId(uid: string, chatId: string): string {
   return `${uid}__${chatId}`;
 }
 
+export function getFeedbackIndexId(
+  uid: string,
+  chatId: string,
+  messageId: string
+): string {
+  return `${uid}__${chatId}__${messageId}`;
+}
+
 export function toIsoStringIfPossible(value: unknown): string | undefined {
   if (!value) return undefined;
   if (typeof value === 'string') {
