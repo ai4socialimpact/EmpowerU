@@ -26,7 +26,6 @@ type FeedbackIndexItem = {
   feedback: 'up' | 'down';
   reasonCode?: string | null;
   reasonLabel?: string | null;
-  status?: string | null;
   active?: boolean;
   displayName?: string | null;
   email?: string | null;
@@ -130,7 +129,6 @@ export default function AdminFeedbackPage() {
             feedback?: 'up' | 'down';
             reasonCode?: string | null;
             reasonLabel?: string | null;
-            status?: string | null;
             active?: boolean;
             displayName?: string | null;
             email?: string | null;
@@ -149,7 +147,6 @@ export default function AdminFeedbackPage() {
             feedback: normalizeFeedbackValue(data.feedback),
             reasonCode: data.reasonCode ?? null,
             reasonLabel: data.reasonLabel ?? null,
-            status: data.status ?? null,
             active: data.active ?? false,
             displayName: data.displayName ?? null,
             email: data.email ?? null,
@@ -203,7 +200,6 @@ export default function AdminFeedbackPage() {
           feedback?: 'up' | 'down';
           reasonCode?: string | null;
           reasonLabel?: string | null;
-          status?: string | null;
           active?: boolean;
           displayName?: string | null;
           email?: string | null;
@@ -228,7 +224,6 @@ export default function AdminFeedbackPage() {
           feedback: normalizeFeedbackValue(data.feedback),
           reasonCode: data.reasonCode ?? null,
           reasonLabel: data.reasonLabel ?? null,
-          status: data.status ?? null,
           active: data.active ?? false,
           displayName: data.displayName ?? null,
           email: data.email ?? null,
@@ -355,16 +350,12 @@ export default function AdminFeedbackPage() {
                       <p>{selectedFeedback.reasonLabel || selectedFeedback.reasonCode || 'No reason selected'}</p>
                     </div>
                     <div>
-                      <p className="text-xs font-semibold uppercase tracking-wide opacity-70">Status</p>
-                      <p>{selectedFeedback.status || 'Unknown'}</p>
-                    </div>
-                    <div>
                       <p className="text-xs font-semibold uppercase tracking-wide opacity-70">Chat</p>
                       <p>{selectedFeedback.uid} / {selectedFeedback.chatId}</p>
                     </div>
                     <div>
-                      <p className="text-xs font-semibold uppercase tracking-wide opacity-70">Updated</p>
-                      <p>{formatDateTime(selectedFeedback.updatedAt)}</p>
+                      <p className="text-xs font-semibold uppercase tracking-wide opacity-70">Created</p>
+                      <p>{formatDateTime(selectedFeedback.createdAt)}</p>
                     </div>
                   </div>
 
@@ -378,7 +369,7 @@ export default function AdminFeedbackPage() {
                   </div>
 
                   <div className="space-y-2">
-                    <p className="text-sm font-semibold">AI Response Snapshot</p>
+                    <p className="text-sm font-semibold">AI Response</p>
                     <div className="rounded-md border p-4">
                       <p className="mb-2 text-xs font-semibold uppercase tracking-wide opacity-70">
                         {selectedFeedback.messageRole === 'user' ? 'User Message' : 'Model Message'}
@@ -405,16 +396,16 @@ export default function AdminFeedbackPage() {
                             ))}
                           </div>
                         ) : (
-                          <p className="text-sm text-muted-foreground">No follow-up questions stored.</p>
+                          <p className="text-sm text-muted-foreground">No follow-up questions</p>
                         )}
                       </div>
                     </div>
 
-                    <div className="space-y-2">
-                      <p className="text-sm font-semibold">Related Resources</p>
-                      <div className="rounded-md border p-4">
-                        {selectedFeedback.relatedResources &&
-                        selectedFeedback.relatedResources.length > 0 ? (
+                    {selectedFeedback.relatedResources &&
+                    selectedFeedback.relatedResources.length > 0 ? (
+                      <div className="space-y-2">
+                        <p className="text-sm font-semibold">Related Resources</p>
+                        <div className="rounded-md border p-4">
                           <div className="space-y-2">
                             {selectedFeedback.relatedResources.map((resource) => (
                               <a
@@ -428,30 +419,9 @@ export default function AdminFeedbackPage() {
                               </a>
                             ))}
                           </div>
-                        ) : (
-                          <p className="text-sm text-muted-foreground">No resources stored.</p>
-                        )}
+                        </div>
                       </div>
-                    </div>
-                  </div>
-
-                  <div className="grid gap-3 rounded-md border p-4 md:grid-cols-2">
-                    <div>
-                      <p className="text-xs font-semibold uppercase tracking-wide opacity-70">Flow</p>
-                      <p>{selectedFeedback.flowName || 'Unknown'}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs font-semibold uppercase tracking-wide opacity-70">Model</p>
-                      <p>{selectedFeedback.modelName || 'Unknown'}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs font-semibold uppercase tracking-wide opacity-70">Created</p>
-                      <p>{formatDateTime(selectedFeedback.createdAt)}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs font-semibold uppercase tracking-wide opacity-70">Feedback Record</p>
-                      <p>{selectedFeedback.id}</p>
-                    </div>
+                    ) : null}
                   </div>
                 </>
               )}
