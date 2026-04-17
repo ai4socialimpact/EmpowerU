@@ -10,19 +10,62 @@ const OPENAI_API_KEY = functions.config().openai.key;
 const ALGOLIA_APP_ID = functions.config().algolia.app_id;
 const ALGOLIA_API_KEY = functions.config().algolia.api_key;
 const ALGOLIA_INDEX_NAME = "glossary";
+const FIREBASE_PROJECT_ID = "top-cubist-449422-f4";
+const DEFAULT_ALLOWED_ORIGINS = [
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+  `https://${FIREBASE_PROJECT_ID}.web.app`,
+  `https://${FIREBASE_PROJECT_ID}.firebaseapp.com`,
+];
+
+function getAllowedOrigins() {
+  const configuredOrigins = functions.config().app?.allowed_origins;
+
+  if (!configuredOrigins) {
+    return DEFAULT_ALLOWED_ORIGINS;
+  }
+
+  return configuredOrigins
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+}
+
+function applyCors(req, res) {
+  const origin = req.get("origin");
+  const allowedOrigins = getAllowedOrigins();
+
+  if (!origin) {
+    return true;
+  }
+
+  if (!allowedOrigins.includes(origin)) {
+    res.status(403).send("Origin not allowed.");
+    return false;
+  }
+
+  res.set("Access-Control-Allow-Origin", origin);
+  res.set("Vary", "Origin");
+  res.set("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  return true;
+}
 
 const client = algoliasearch(ALGOLIA_APP_ID, ALGOLIA_API_KEY);
 const index = client.initIndex(ALGOLIA_INDEX_NAME);
 
 exports.chatWithOpenAI = functions.https.onRequest(async (req, res) => {
-  // Set CORS headers for preflight requests
-  res.set("Access-Control-Allow-Origin", "*");
-  res.set("Access-Control-Allow-Methods", "GET, POST");
-  res.set("Access-Control-Allow-Headers", "Content-Type");
+  if (!applyCors(req, res)) {
+    return;
+  }
 
   if (req.method === "OPTIONS") {
-    // End preflight request successfully
     res.status(204).send("");
+    return;
+  }
+
+  if (req.method !== "POST") {
+    res.status(405).send("Method not allowed.");
     return;
   }
   

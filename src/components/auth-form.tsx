@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useForm } from 'react-hook-form';
@@ -30,6 +30,88 @@ const signupSchema = z.object({
 type AuthFormProps = {
   mode: 'login' | 'signup';
 };
+
+const LOGIN_LOCKOUT_KEY_PREFIX = 'empoweru-login-lockout:';
+const MAX_LOGIN_ATTEMPTS = 5;
+const LOGIN_LOCKOUT_WINDOW_MS = 15 * 60 * 1000;
+
+type LoginLockoutState = {
+  failedAttempts: number;
+  lockoutUntil: number | null;
+};
+
+function normalizeLoginEmail(email: string) {
+  return email.trim().toLowerCase();
+}
+
+function getLoginLockoutKey(email: string) {
+  return `${LOGIN_LOCKOUT_KEY_PREFIX}${normalizeLoginEmail(email)}`;
+}
+
+function readLoginLockoutState(email: string): LoginLockoutState {
+  if (typeof window === 'undefined') {
+    return { failedAttempts: 0, lockoutUntil: null };
+  }
+
+  const key = getLoginLockoutKey(email);
+  const rawValue = window.localStorage.getItem(key);
+
+  if (!rawValue) {
+    return { failedAttempts: 0, lockoutUntil: null };
+  }
+
+  try {
+    const parsed = JSON.parse(rawValue) as Partial<LoginLockoutState>;
+    const failedAttempts = typeof parsed.failedAttempts === 'number' ? parsed.failedAttempts : 0;
+    const lockoutUntil = typeof parsed.lockoutUntil === 'number' ? parsed.lockoutUntil : null;
+
+    if (lockoutUntil && lockoutUntil <= Date.now()) {
+      window.localStorage.removeItem(key);
+      return { failedAttempts: 0, lockoutUntil: null };
+    }
+
+    return { failedAttempts, lockoutUntil };
+  } catch {
+    window.localStorage.removeItem(key);
+    return { failedAttempts: 0, lockoutUntil: null };
+  }
+}
+
+function writeLoginLockoutState(email: string, state: LoginLockoutState) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  window.localStorage.setItem(getLoginLockoutKey(email), JSON.stringify(state));
+}
+
+function clearLoginLockoutState(email: string) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  window.localStorage.removeItem(getLoginLockoutKey(email));
+}
+
+function formatLockoutTimeRemaining(lockoutUntil: number | null) {
+  if (!lockoutUntil) {
+    return null;
+  }
+
+  const remainingMs = Math.max(lockoutUntil - Date.now(), 0);
+  if (remainingMs <= 0) {
+    return null;
+  }
+
+  const remainingMinutes = Math.floor(remainingMs / 60000);
+  const remainingSeconds = Math.ceil((remainingMs % 60000) / 1000);
+
+  if (remainingMinutes <= 0) {
+    return `${remainingSeconds}s`;
+  }
+
+  return `${remainingMinutes}m ${remainingSeconds}s`;
+}
 
 function handleFirebaseAuthError(error: unknown, toast: ReturnType<typeof useToast>['toast']) {
   console.error(error);
@@ -82,6 +164,8 @@ export function LoginForm() {
   const router = useRouter();
   const { toast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
+  const [lockoutUntil, setLockoutUntil] = useState<number | null>(null);
+  const [timeRemainingLabel, setTimeRemainingLabel] = useState<string | null>(null);
 
   const form = useForm<z.infer<typeof loginSchema>>({
     resolver: zodResolver(loginSchema),
@@ -91,10 +175,51 @@ export function LoginForm() {
     },
   });
 
+  const watchedEmail = form.watch('email');
+
+  useEffect(() => {
+    const normalizedEmail = normalizeLoginEmail(watchedEmail);
+
+    if (!normalizedEmail) {
+      setLockoutUntil(null);
+      setTimeRemainingLabel(null);
+      return;
+    }
+
+    const syncLockout = () => {
+      const state = readLoginLockoutState(normalizedEmail);
+      setLockoutUntil(state.lockoutUntil);
+      setTimeRemainingLabel(formatLockoutTimeRemaining(state.lockoutUntil));
+    };
+
+    syncLockout();
+
+    const intervalId = window.setInterval(syncLockout, 1000);
+    return () => window.clearInterval(intervalId);
+  }, [watchedEmail]);
+
   const onSubmit = async (values: z.infer<typeof loginSchema>) => {
+    const normalizedEmail = normalizeLoginEmail(values.email);
+    const existingState = readLoginLockoutState(normalizedEmail);
+
+    if (existingState.lockoutUntil && existingState.lockoutUntil > Date.now()) {
+      const remainingTime = formatLockoutTimeRemaining(existingState.lockoutUntil);
+      setLockoutUntil(existingState.lockoutUntil);
+      setTimeRemainingLabel(remainingTime);
+      toast({
+        variant: 'destructive',
+        title: 'Too Many Attempts',
+        description: `This account is temporarily locked. Try again in ${remainingTime ?? 'a moment'}.`,
+      });
+      return;
+    }
+
     setIsLoading(true);
     try {
       const userCredential = await signInWithEmailAndPassword(auth, values.email, values.password);
+      clearLoginLockoutState(normalizedEmail);
+      setLockoutUntil(null);
+      setTimeRemainingLabel(null);
       await upsertUserProfile({
         firestore,
         uid: userCredential.user.uid,
@@ -103,11 +228,32 @@ export function LoginForm() {
       });
       router.push('/dashboard');
     } catch (error) {
+      const nextFailedAttempts = existingState.failedAttempts + 1;
+      const nextLockoutUntil =
+        nextFailedAttempts >= MAX_LOGIN_ATTEMPTS ? Date.now() + LOGIN_LOCKOUT_WINDOW_MS : null;
+
+      writeLoginLockoutState(normalizedEmail, {
+        failedAttempts: nextFailedAttempts,
+        lockoutUntil: nextLockoutUntil,
+      });
+
+      setLockoutUntil(nextLockoutUntil);
+      setTimeRemainingLabel(formatLockoutTimeRemaining(nextLockoutUntil));
       handleFirebaseAuthError(error, toast);
+
+      if (nextLockoutUntil) {
+        toast({
+          variant: 'destructive',
+          title: 'Login Locked',
+          description: `Too many failed attempts. Try again in ${formatLockoutTimeRemaining(nextLockoutUntil) ?? '15m'}.`,
+        });
+      }
     } finally {
       setIsLoading(false);
     }
   };
+
+  const isLockedOut = Boolean(lockoutUntil && lockoutUntil > Date.now());
 
   return (
     <>
@@ -139,9 +285,14 @@ export function LoginForm() {
               </FormItem>
             )}
           />
-          <Button type="submit" className="w-full" disabled={isLoading}>
+          {isLockedOut ? (
+            <p className="text-sm font-medium text-destructive">
+              Too many failed attempts. Try again in {timeRemainingLabel ?? 'a moment'}.
+            </p>
+          ) : null}
+          <Button type="submit" className="w-full" disabled={isLoading || isLockedOut}>
             {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            Log In
+            {isLockedOut ? 'Locked' : 'Log In'}
           </Button>
         </form>
       </Form>
