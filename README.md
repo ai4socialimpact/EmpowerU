@@ -27,16 +27,18 @@ A Next.js app for helping students explore college resources, chat with an AI me
 - OTEL_SDK_DISABLED=true
 
 
+## Install
+- Install dependencies with npm install
+- npm run dev to see the local server
+
 ## Firebase 
 
 - Firebase project ID: `top-cubist-449422-f4`
+-Firebase console to see the storage and other information
 
-
-- install dependencies with npm install
-- Run app with npm run dev
-- Do Type checks with npm run typecheck
 
 - Only users that have admin can see the admin chats and admin feedback.  (basically all of the chats and feedback that was given.)
+- To be given admin, go to firebase console and then firestore. Then click on the admins collection and add the person
 - For storage, it is currently using cloud firestore. 
 - Definitely review security rules and admin access before production. 
 - Firestore security rules are in firestore.rules
