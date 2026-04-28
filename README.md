@@ -35,7 +35,7 @@ A Next.js app for helping students explore college resources, chat with an AI me
 
 - Firebase project ID: `top-cubist-449422-f4`
 -Firebase console to see the storage and other information
-
+- In Firebase console, you can delete or edit things like users, conversations, and things. Everything is stored in Firestore. 
 
 - Only users that have admin can see the admin chats and admin feedback.  (basically all of the chats and feedback that was given.)
 - To be given admin, go to firebase console and then firestore. Then click on the admins collection and add the person
@@ -43,3 +43,5 @@ A Next.js app for helping students explore college resources, chat with an AI me
 - Definitely review security rules and admin access before production. 
 - Firestore security rules are in firestore.rules
 - Don't commit .env.local    (Make sure it's in gitignore so you don't upload all of your api keys.)
+
+- I am not a security expert at all so make sure to check so that it can defend against outside attacks 
